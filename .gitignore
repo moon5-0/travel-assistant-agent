@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AgentScope
+.agentscope/
+
+# Local agent/editor configuration
+.agents/
+.claude/settings.local.json
+.claude/claudian-settings.json
+.obsidian/
+
+# Data
+data/models/
+data/memory/*.json
+!data/memory/.gitkeep
+**/data/rag_knowledge/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Temporary files
+tmp/
+
+# Local learning/reference materials (not part of the runnable project)
+/居丽叶的简历项目6：差旅出行助手Agent/
+/居丽叶的简历项目6：差旅出行助手代码解读/
+/差旅出行助手_10天简历面试准备计划.md
+/本项目的技术栈以及包装.md
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

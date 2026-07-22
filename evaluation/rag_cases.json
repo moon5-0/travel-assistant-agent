@@ -1,0 +1,149 @@
+[
+  {
+    "id": "travel_hotel_beijing",
+    "question": "北京出差住酒店每晚最多可以报销多少钱？",
+    "expected_keywords": ["500"],
+    "expected_sources": ["01_travel_standards.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "travel_hotel_hangzhou",
+    "question": "杭州出差住宿上限是多少？",
+    "expected_keywords": ["400"],
+    "expected_sources": ["01_travel_standards.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "travel_hotel_highland",
+    "question": "去西藏出差，住宿标准能上浮多少？",
+    "expected_keywords": ["20%"],
+    "expected_sources": ["01_travel_standards.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "travel_domestic_flight",
+    "question": "国内出差坐飞机可以订什么舱位？",
+    "expected_keywords": ["经济舱"],
+    "expected_sources": ["01_travel_standards.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "travel_train_seat",
+    "question": "出差乘坐高铁允许预订什么座位？",
+    "expected_keywords": ["二等座"],
+    "expected_sources": ["01_travel_standards.txt", "03_booking_guide.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "travel_apply_ahead",
+    "question": "普通出差需要提前几个工作日申请？",
+    "expected_keywords": ["3个工作日"],
+    "expected_sources": ["01_travel_standards.txt", "04_faq.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "reimbursement_deadline",
+    "question": "出差结束后最晚多久提交报销？",
+    "expected_keywords": ["30"],
+    "expected_sources": ["02_reimbursement_policy.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "reimbursement_materials",
+    "question": "报销差旅费需要准备哪些材料？",
+    "expected_keywords": ["审批单", "发票"],
+    "expected_sources": ["02_reimbursement_policy.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "reimbursement_lost_invoice",
+    "question": "发票遗失后应该怎样处理？",
+    "expected_keywords": ["遗失说明"],
+    "expected_sources": ["02_reimbursement_policy.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "booking_domestic_flight",
+    "question": "国内机票提前多久预订通常更合适？",
+    "expected_keywords": ["7-14天"],
+    "expected_sources": ["03_booking_guide.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "booking_international_flight",
+    "question": "国际机票建议提前多久购买？",
+    "expected_keywords": ["21-30天"],
+    "expected_sources": ["03_booking_guide.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "faq_private_car",
+    "question": "出差可以驾驶私家车吗？",
+    "expected_keywords": ["可以"],
+    "expected_sources": ["04_faq.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "faq_hotel_over_budget",
+    "question": "出差时酒店价格超过公司标准怎么办？",
+    "expected_keywords": ["审批"],
+    "expected_sources": ["04_faq.txt", "01_travel_standards.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "emergency_delay",
+    "question": "航班延误超过四小时应该怎么处理？",
+    "expected_keywords": ["改签", "凭证"],
+    "expected_sources": ["05_emergency_procedures.txt", "04_faq.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "emergency_cancel",
+    "question": "出差航班突然取消了怎么办？",
+    "expected_keywords": ["航空公司", "改签"],
+    "expected_sources": ["05_emergency_procedures.txt", "04_faq.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "platform_features",
+    "question": "阿里商旅平台能提供哪些主要功能？",
+    "expected_keywords": ["差旅申请", "预订", "报销"],
+    "expected_sources": ["06_platform_guide.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "city_beijing_airports",
+    "question": "北京有哪两个主要机场？",
+    "expected_keywords": ["首都国际机场", "大兴国际机场"],
+    "expected_sources": ["07_city_specific_tips.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "green_high_speed",
+    "question": "多少公里以内出差建议优先乘坐高铁？",
+    "expected_keywords": ["500公里"],
+    "expected_sources": ["08_environmental_initiatives.txt"],
+    "should_answer": true
+  },
+  {
+    "id": "out_of_domain_cooking",
+    "question": "红烧肉应该怎么做？",
+    "expected_keywords": [],
+    "expected_sources": [],
+    "should_answer": false
+  },
+  {
+    "id": "out_of_domain_programming",
+    "question": "Python装饰器的原理是什么？",
+    "expected_keywords": [],
+    "expected_sources": [],
+    "should_answer": false
+  },
+  {
+    "id": "out_of_domain_realtime_weather",
+    "question": "杭州明天下雨吗？",
+    "expected_keywords": [],
+    "expected_sources": [],
+    "should_answer": false
+  }
+]
