@@ -165,7 +165,10 @@ class OrchestrationAgent(AgentBase):
             "rewritten_query": intention_data.get("rewritten_query", "")
         }
 
-        # 从记忆系统获取上下文
+        # 这里会再次读取记忆，但用途不同于 CLI 给 IntentionAgent 的历史摘要：
+        # IntentionAgent 使用“摘要 + 最近对话”理解和路由；子 Agent 需要最新的
+        # 原始对话与结构化偏好执行任务（此时当前用户消息也已写入记忆）。
+        # TODO(优化): 后续可在请求入口构建统一 RequestContext 并向下传递，减少重复读取。
         if self.memory_manager:
             # 短期记忆：最近对话
             recent_context = self.memory_manager.short_term.get_recent_context(3)

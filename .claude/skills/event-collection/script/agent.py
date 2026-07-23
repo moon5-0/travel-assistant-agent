@@ -42,6 +42,9 @@ class EventCollectionAgent(AgentBase):
             try:
                 data = json.loads(content)
                 context = data.get("context", {})
+                # TODO(优化): IntentionAgent 已在 context["key_entities"] 中做过一次粗粒度实体提取，
+                # 当前仍只从 rewritten_query 重新提取。后续可复用并校验 key_entities，减少重复 LLM
+                # 工作和两次提取结果不一致的风险；行程字段仍以本 Agent 的标准化结果为准。
                 user_query = context.get("rewritten_query", "") or str(data)
                 user_preferences = context.get("user_preferences", {})
             except json.JSONDecodeError:
