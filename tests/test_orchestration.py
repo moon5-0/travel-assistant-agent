@@ -144,7 +144,17 @@ def intention_message(schedule):
 
 class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
     async def test_same_priority_runs_in_parallel_and_next_priority_waits(self):
-        event_agent = FakeAgent("event_collection", delay=0.08)
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "杭州",
+                "start_date": "2026-07-24",
+                "duration_days": 2,
+                "missing_info": [],
+            },
+            delay=0.08,
+        )
         info_agent = FakeAgent("information_query", delay=0.08)
         plan_agent = FakeAgent("itinerary_planning", delay=0.01)
         orchestrator = OrchestrationAgent(
@@ -189,6 +199,284 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
             {item["agent_name"] for item in previous_results},
             {"event_collection", "information_query"},
         )
+
+    async def test_missing_trip_info_skips_itinerary_and_requests_clarification(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": None,
+                "start_date": None,
+                "duration_days": None,
+                "missing_info": [
+                    "destination",
+                    "start_date",
+                    "duration_days",
+                ],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(
+            agent_registry={
+                "event_collection": event_agent,
+                "itinerary_planning": plan_agent,
+            }
+        )
+
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        response = await orchestrator.reply(intention_message(schedule))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertEqual(
+            result["missing_fields"],
+            ["destination", "start_date", "duration_days"],
+        )
+        self.assertIn("请补充", result["message"])
+
+        # 信息不完整时，行程规划Agent不应该被调用。
+        self.assertIsNone(plan_agent.started_at)
+
+    async def test_failed_event_collection_skips_itinerary(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            exception=RuntimeError("信息提取失败"),
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(
+            agent_registry={
+                "event_collection": event_agent,
+                "itinerary_planning": plan_agent,
+            }
+        )
+
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        response = await orchestrator.reply(intention_message(schedule))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("请补充", result["message"])
+        self.assertIsNotNone(event_agent.started_at)
+        self.assertIsNone(plan_agent.started_at)
+
+    async def test_next_turn_merges_pending_trip_and_resumes_planning(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": None,
+                "destination": "北京",
+                "start_date": None,
+                "end_date": None,
+                "duration_days": None,
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(
+            agent_registry={
+                "event_collection": event_agent,
+                "itinerary_planning": plan_agent,
+            }
+        )
+
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        first_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        first_result = json.loads(first_response.content)
+
+        self.assertEqual(
+            first_result["status"],
+            "needs_clarification",
+        )
+        self.assertIsNone(plan_agent.started_at)
+
+        # 模拟用户第二轮补充的信息。
+        event_agent.payload = {
+            "origin": "苏州",
+            "destination": None,
+            "start_date": "2026-07-24",
+            "end_date": "2026-07-26",
+            "duration_days": 3,
+        }
+
+        second_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        second_result = json.loads(second_response.content)
+
+        self.assertEqual(second_result["status"], "completed")
+        self.assertIsNotNone(plan_agent.started_at)
+
+        previous_results = plan_agent.received_input[
+            "previous_results"
+        ]
+        event_result = next(
+            item
+            for item in previous_results
+            if item["agent_name"] == "event_collection"
+        )
+        merged_data = event_result["result"]["data"]
+
+        self.assertEqual(merged_data["origin"], "苏州")
+        self.assertEqual(merged_data["destination"], "北京")
+        self.assertEqual(
+            merged_data["start_date"],
+            "2026-07-24",
+        )
+        self.assertEqual(merged_data["duration_days"], 3)
+
+    async def test_multiple_turns_keep_asking_until_trip_is_complete(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "destination": "北京",
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(
+            agent_registry={
+                "event_collection": event_agent,
+                "itinerary_planning": plan_agent,
+            }
+        )
+
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        # 第一轮：只有目的地。
+        first_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        first_result = json.loads(first_response.content)
+
+        self.assertEqual(
+            first_result["status"],
+            "needs_clarification",
+        )
+        self.assertIsNone(plan_agent.started_at)
+
+        # 第二轮：只补充出发地，信息仍然不完整。
+        event_agent.payload = {
+            "origin": "苏州",
+        }
+
+        second_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        second_result = json.loads(second_response.content)
+
+        self.assertEqual(
+            second_result["status"],
+            "needs_clarification",
+        )
+        self.assertEqual(
+            second_result["missing_fields"],
+            ["start_date", "duration_days"],
+        )
+        self.assertIsNone(plan_agent.started_at)
+
+        # 第三轮：补充日期和天数，信息完整。
+        event_agent.payload = {
+            "start_date": "2026-07-25",
+            "duration_days": 3,
+        }
+
+        third_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        third_result = json.loads(third_response.content)
+
+        self.assertEqual(third_result["status"], "completed")
+        self.assertIsNotNone(plan_agent.started_at)
+
+        # 行程规划完成后，临时状态应该被清空。
+        self.assertEqual(orchestrator._pending_trip_data, {})
+
+    async def test_clear_pending_trip_discards_previous_fields(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={"destination": "北京"},
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(
+            agent_registry={
+                "event_collection": event_agent,
+                "itinerary_planning": plan_agent,
+            }
+        )
+
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        first_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        first_result = json.loads(first_response.content)
+
+        self.assertEqual(
+            first_result["status"],
+            "needs_clarification",
+        )
+        self.assertEqual(
+            orchestrator._pending_trip_data["destination"],
+            "北京",
+        )
+
+        # 模拟用户执行clear命令。
+        orchestrator.clear_pending_trip()
+
+        event_agent.payload = {
+            "origin": "苏州",
+            "start_date": "2026-07-25",
+            "duration_days": 3,
+        }
+
+        second_response = await orchestrator.reply(
+            intention_message(schedule)
+        )
+        second_result = json.loads(second_response.content)
+
+        # 北京已经被清除，所以仍然缺少目的地。
+        self.assertEqual(
+            second_result["status"],
+            "needs_clarification",
+        )
+        self.assertEqual(
+            second_result["missing_fields"],
+            ["destination"],
+        )
+        self.assertIsNone(plan_agent.started_at)
 
     async def test_partial_failure_keeps_successful_results(self):
         good_agent = FakeAgent("event_collection", payload={"destination": "杭州"})

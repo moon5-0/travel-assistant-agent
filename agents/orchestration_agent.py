@@ -45,6 +45,8 @@ class OrchestrationAgent(AgentBase):
         self.name = name
         self.agent_registry = agent_registry or {}
         self.memory_manager = memory_manager
+        # 保存当前会话中尚未补全的结构化行程信息。
+        self._pending_trip_data: Dict[str, Any] = {}
 
     def register_agent(self, agent_name: str, agent: AgentBase):
         """注册子智能体"""
@@ -56,6 +58,10 @@ class OrchestrationAgent(AgentBase):
         if agent_name in self.agent_registry:
             del self.agent_registry[agent_name]
             logger.info(f"Unregistered agent: {agent_name}")
+
+    def clear_pending_trip(self) -> None:
+        """清除当前会话中尚未完成的行程信息。"""
+        self._pending_trip_data.clear()
 
     async def reply(self, x: Optional[Union[Msg, List[Msg]]] = None) -> Msg:
         """
@@ -125,6 +131,46 @@ class OrchestrationAgent(AgentBase):
                 if parallel_tasks:
                     batch_results = await self._execute_parallel_agents(parallel_tasks, context, results)
                     results.extend(batch_results)
+                    # 下一批包含行程规划时，先检查前序事项信息是否完整。
+                    next_batch_has_itinerary = any(
+                        scheduled_task.get("priority", 0) == priority
+                        and scheduled_task.get("agent_name") == "itinerary_planning"
+                        for scheduled_task in sorted_schedule
+                    )
+
+                    if next_batch_has_itinerary:
+                        self._merge_pending_trip_data(results)
+
+                    missing_fields = self._get_missing_trip_fields(results)
+
+                    if next_batch_has_itinerary and missing_fields:
+                        field_labels = {
+                            "origin": "出发地",
+                            "destination": "目的地",
+                            "start_date": "出发日期",
+                            "duration_days": "行程天数",
+                        }
+                        missing_labels = "、".join(
+                            field_labels.get(field, field)
+                            for field in missing_fields
+                        )
+
+                        final_result = self._aggregate_results(results, intention_data)
+                        final_result.update({
+                            "status": "needs_clarification",
+                            "missing_fields": missing_fields,
+                            "message": f"行程信息不完整，请补充：{missing_labels}",
+                        })
+
+                        # 提前返回前，也要保存Priority 1中已经识别成功的偏好。
+                        if self.memory_manager:
+                            self._update_memory(intention_data, results)
+
+                        return Msg(
+                            name=self.name,
+                            content=json.dumps(final_result, ensure_ascii=False),
+                            role="assistant",
+                        )
                     parallel_tasks = []
 
             current_priority = priority
@@ -134,6 +180,15 @@ class OrchestrationAgent(AgentBase):
         if parallel_tasks:
             batch_results = await self._execute_parallel_agents(parallel_tasks, context, results)
             results.extend(batch_results)
+
+        # 行程规划成功后，本次待补全状态已经完成。
+        itinerary_completed = any(
+            item.get("agent_name") == "itinerary_planning"
+            and item.get("result", {}).get("status") == "success"
+            for item in results
+        )
+        if itinerary_completed:
+            self._pending_trip_data.clear()
 
         # 聚合结果
         final_result = self._aggregate_results(results, intention_data)
@@ -147,6 +202,97 @@ class OrchestrationAgent(AgentBase):
             content=json.dumps(final_result, ensure_ascii=False),
             role="assistant"
         )
+
+    def _merge_pending_trip_data(
+        self,
+        results: List[Dict[str, Any]],
+    ) -> None:
+        """将本轮事项信息与上一轮待补全信息合并。"""
+        trip_fields = (
+            "origin",
+            "destination",
+            "start_date",
+            "end_date",
+            "duration_days",
+            "return_location",
+            "trip_purpose",
+        )
+
+        for item in results:
+            if item.get("agent_name") != "event_collection":
+                continue
+
+            result = item.get("result", {})
+            if result.get("status") != "success":
+                continue
+
+            current_data = result.get("data", {})
+            if not isinstance(current_data, dict):
+                continue
+
+            # 先保留上一轮的信息，再使用本轮非空字段覆盖。
+            merged_data = dict(self._pending_trip_data)
+
+            for field in trip_fields:
+                value = current_data.get(field)
+                if value not in (None, "", []):
+                    merged_data[field] = value
+
+            # 保留summary、missing_info等非行程字段。
+            for key, value in current_data.items():
+                if key not in trip_fields:
+                    merged_data[key] = value
+
+            # 后面的行程规划Agent将从results中获得合并后的结果。
+            result["data"] = merged_data
+
+            # 保存下来，供下一轮继续补充。
+            self._pending_trip_data = {
+                field: merged_data.get(field)
+                for field in trip_fields
+                if merged_data.get(field) not in (None, "", [])
+            }
+            break
+
+    def _get_missing_trip_fields(
+        self,
+        results: List[Dict[str, Any]],
+    ) -> List[str]:
+        """从事项收集结果中检查行程规划所需的必填字段。"""
+        event_data = None
+
+        for item in results:
+            if item.get("agent_name") != "event_collection":
+                continue
+
+            result = item.get("result", {})
+            if result.get("status") != "success":
+                continue
+
+            event_data = result.get("data", {})
+            break
+
+        # 没有可靠的事项收集结果时，不能继续规划行程。
+        if event_data is None:
+            return [
+                "origin",
+                "destination",
+                "start_date",
+                "duration_days",
+            ]
+
+        missing_fields = []
+
+        # 行程规划需要明确的出发地、目的地和出发日期。
+        for field in ("origin", "destination", "start_date"):
+            if not event_data.get(field):
+                missing_fields.append(field)
+
+        # duration_days和end_date有一个即可表达行程长度。
+        if not event_data.get("duration_days") and not event_data.get("end_date"):
+            missing_fields.append("duration_days")
+
+        return missing_fields
 
     def _prepare_context(self, intention_data: Dict[str, Any]) -> Dict[str, Any]:
         """
