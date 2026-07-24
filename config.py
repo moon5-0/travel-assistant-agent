@@ -2,11 +2,13 @@
 Configuration for the Aligo Multi-Agent System
 """
 
+import os
+
 # LLM Configuration
 LLM_CONFIG = {
-    "api_key": "API_KEY",
-    "model_name": "Model_Name",
-    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+    "model_name": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com",
     "temperature": 0.7,
     "max_tokens": 8192,
 }

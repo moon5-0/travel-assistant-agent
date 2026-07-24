@@ -1,5 +1,6 @@
 # 基础（milvus_lite 依赖 pkg_resources，需 setuptools<82）
 setuptools>=69.0.0,<82
+PyYAML==6.0.2
 
 # 多智能体框架
 agentscope==1.0.16

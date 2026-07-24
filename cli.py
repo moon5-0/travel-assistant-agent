@@ -51,6 +51,25 @@ class AligoCLI:
         self._agent_cache = {}  # 智能体缓存
         self.circuit_breaker = None  # 在 initialize_system 中从 RESILIENCE_CONFIG 初始化
 
+    def _ensure_api_key(self):
+        """确保启动时已提供 LLM API Key。
+
+        优先使用环境变量中的配置；未配置时在终端隐藏输入，
+        密钥只保存在当前进程内，不会写入配置文件。
+        """
+        api_key = str(LLM_CONFIG.get("api_key") or "").strip()
+        if api_key:
+            return
+
+        api_key = Prompt.ask(
+            "DeepSeek API Key（输入内容不会显示）",
+            password=True,
+        ).strip()
+        if not api_key:
+            raise ValueError("DeepSeek API Key 不能为空")
+
+        LLM_CONFIG["api_key"] = api_key
+
     def print_banner(self):
         """打印欢迎横幅"""
         self.console.print("\n[bold cyan]🌏 Aligo 商旅助手[/bold cyan] - 让差旅更简单\n", style="bold")
@@ -78,6 +97,9 @@ class AligoCLI:
 
     async def initialize_system(self):
         """初始化系统 - 使用懒加载优化启动速度"""
+        # 未通过环境变量配置密钥时，启动后自动隐藏询问。
+        self._ensure_api_key()
+
         # 获取用户信息
         self.user_id = Prompt.ask(
             "用户ID",
@@ -101,8 +123,10 @@ class AligoCLI:
                     "base_url": LLM_CONFIG["base_url"],
                     "timeout": float(timeout_sec),
                 },
-                temperature=LLM_CONFIG.get("temperature", 0.7),
-                max_tokens=LLM_CONFIG.get("max_tokens", 2000),
+                generate_kwargs={
+                    "temperature": LLM_CONFIG.get("temperature", 0.7),
+                    "max_tokens": LLM_CONFIG.get("max_tokens", 2000),
+                },
             )
 
             # 初始化记忆管理器（传入LLM模型用于总结）
@@ -288,7 +312,18 @@ class AligoCLI:
                 self.console.print("未能获取有效结果，请重新描述您的需求。", style="yellow")
         else:
             # 情况2: 有智能体被调用，生成人性化回复
-            has_output = self._generate_human_response(results)
+            needs_clarification = result_data.get("status") == "needs_clarification"
+            has_output = self._generate_human_response(
+                results,
+                show_missing_info=not needs_clarification,
+            )
+
+            # 行程信息不足时，优先展示调度器生成的中文追问，
+            # 不直接暴露子 Agent 的英文字段名。
+            if needs_clarification:
+                message = result_data.get("message", "行程信息不完整，请补充必要信息。")
+                self.console.print(f"\n💡 {message}", style="yellow")
+                has_output = True
 
             # 情况3: 智能体执行了但没有显示内容（兜底）
             if not has_output:
@@ -369,7 +404,11 @@ class AligoCLI:
 
         return "\n".join(summary_parts) if summary_parts else ""
 
-    def _generate_human_response(self, results: list) -> bool:
+    def _generate_human_response(
+        self,
+        results: list,
+        show_missing_info: bool = True,
+    ) -> bool:
         """
         根据结果生成人性化的回复
         """
@@ -507,7 +546,7 @@ class AligoCLI:
                         if end_date: self.console.print(f"  • 返程日期: [cyan]{end_date}[/cyan]")
                         info_shown = True
 
-                if missing_info:
+                if missing_info and show_missing_info:
                     self.console.print(f"\n💡 还需要补充: {', '.join(missing_info)}", style="yellow")
                     info_shown = True
                 
@@ -780,7 +819,14 @@ class AligoCLI:
                     await self.run_health_check()
                 elif command == "clear":
                     self.memory_manager.short_term.clear()
-                    self.console.print("✓ 已清空短期记忆", style="green")
+
+                    if self.orchestrator:
+                        self.orchestrator.clear_pending_trip()
+
+                    self.console.print(
+                        "✓ 已清空当前任务和短期记忆",
+                        style="green",
+                    )
                 elif command == "history":
                     self.show_history()
                 elif command == "preferences":
