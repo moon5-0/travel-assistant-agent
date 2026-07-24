@@ -30,6 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # 让测试在未安装 AgentScope 的环境中也能运行。
 try:
+    from agentscope.agent import AgentBase
     from agentscope.message import Msg
 except ModuleNotFoundError:
     agentscope_module = types.ModuleType("agentscope")
@@ -136,6 +137,9 @@ class FakeMilvusClient:
 def make_agent(model=None):
     """跳过重量级构造过程，只设置 reply() 测试所需状态。"""
     agent = object.__new__(RAGKnowledgeAgent)
+    # 不加载 Embedding/Milvus，但初始化 AgentScope 必需的
+    # reply 钩子状态，使测试可在真实 AgentScope 环境中执行。
+    AgentBase.__init__(agent)
     agent.name = "RAGKnowledgeAgent"
     agent.model = model
     agent.initialized = True

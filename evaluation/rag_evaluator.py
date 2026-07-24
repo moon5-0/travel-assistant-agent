@@ -189,8 +189,10 @@ def main() -> int:
             model_name=LLM_CONFIG["model_name"],
             api_key=LLM_CONFIG["api_key"],
             client_kwargs={"base_url": LLM_CONFIG["base_url"]},
-            temperature=0,
-            max_tokens=LLM_CONFIG.get("max_tokens", 2000),
+            generate_kwargs={
+                "temperature": 0,
+                "max_tokens": LLM_CONFIG.get("max_tokens", 2000),
+            },
         )
 
     agent = agent_class(model=model)

@@ -25,6 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # 让测试在未安装 AgentScope 的环境中也能运行。
 try:
+    from agentscope.agent import AgentBase
     from agentscope.message import Msg
 except ModuleNotFoundError:
     agentscope_module = types.ModuleType("agentscope")
@@ -89,6 +90,9 @@ class FakeModel:
 
 def make_agent(model=None):
     agent = object.__new__(InformationQueryAgent)
+    # 跳过 Skill Agent 的外部依赖初始化，但保留 AgentScope
+    # 基类必需的 reply 钩子状态，使测试兼容真实 AgentScope 环境。
+    AgentBase.__init__(agent)
     agent.name = "InformationQueryAgent"
     agent.model = model
     agent.skill_loader = types.SimpleNamespace(
