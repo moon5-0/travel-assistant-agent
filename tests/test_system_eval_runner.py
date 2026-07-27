@@ -1,16 +1,18 @@
-"""Agent 场景评估运行器的离线测试。"""
+"""System Evaluation 场景运行器的离线测试。"""
 
 from contextlib import asynccontextmanager
 import unittest
 
-from evaluation.agent_eval_runner import AgentEvaluationRunner
+from evaluation.system_eval_runner import SystemEvaluationRunner
 
 
-def expected(response: str):
+def expected():
     return {
         "required_scheduled_agents": [],
+        "forbidden_scheduled_agents": [],
         "required_executed_agents": [],
         "forbidden_executed_agents": [],
+        "forbidden_entity_fields": [],
         "status": "completed",
         "entities": {},
         "missing_fields": [],
@@ -18,7 +20,6 @@ def expected(response: str):
             "preferences_change": "none",
             "trip_history_change": "none",
         },
-        "must_contain": [response],
     }
 
 
@@ -46,7 +47,7 @@ class StatefulCollector:
         return trace(f"{self.case_id}-turn-{self.turn_number}")
 
 
-class TestAgentEvaluationRunner(unittest.IsolatedAsyncioTestCase):
+class TestSystemEvaluationRunner(unittest.IsolatedAsyncioTestCase):
     async def test_reuses_runtime_within_case_and_isolates_different_cases(self):
         dataset = {
             "dataset_version": "test",
@@ -56,15 +57,15 @@ class TestAgentEvaluationRunner(unittest.IsolatedAsyncioTestCase):
                     "id": "multi_turn",
                     "severity": "critical",
                     "turns": [
-                        {"user_input": "第一轮", "expected": expected("turn-1")},
-                        {"user_input": "第二轮", "expected": expected("turn-2")},
+                        {"user_input": "第一轮", "expected": expected()},
+                        {"user_input": "第二轮", "expected": expected()},
                     ],
                 },
                 {
                     "id": "new_case",
                     "severity": "major",
                     "turns": [
-                        {"user_input": "新场景", "expected": expected("turn-1")},
+                        {"user_input": "新场景", "expected": expected()},
                     ],
                 },
             ],
@@ -77,7 +78,7 @@ class TestAgentEvaluationRunner(unittest.IsolatedAsyncioTestCase):
             collectors.append(collector)
             yield collector
 
-        report = await AgentEvaluationRunner(
+        report = await SystemEvaluationRunner(
             dataset,
             runtime_factory,
         ).run()
@@ -98,14 +99,14 @@ class TestAgentEvaluationRunner(unittest.IsolatedAsyncioTestCase):
                     "id": "broken",
                     "severity": "critical",
                     "turns": [
-                        {"user_input": "失败", "expected": expected("unused")}
+                        {"user_input": "失败", "expected": expected()}
                     ],
                 },
                 {
                     "id": "healthy",
                     "severity": "critical",
                     "turns": [
-                        {"user_input": "成功", "expected": expected("turn-1")}
+                        {"user_input": "成功", "expected": expected()}
                     ],
                 },
             ],
@@ -122,7 +123,7 @@ class TestAgentEvaluationRunner(unittest.IsolatedAsyncioTestCase):
             else:
                 yield StatefulCollector(case["id"])
 
-        report = await AgentEvaluationRunner(
+        report = await SystemEvaluationRunner(
             dataset,
             runtime_factory,
         ).run()

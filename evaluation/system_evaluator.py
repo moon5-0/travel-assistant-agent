@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Agent 链路评估器。
+"""System Evaluation 系统行为评估器。
 
-v0.1 先实现数据集加载与结构校验，不调用真实 LLM。
-后续版本再增加执行轨迹采集、硬性断言和指标汇总。
+这里只判断意图路由、实际执行、实体、澄清状态和记忆副作用。
+最终回复的措辞与行程内容质量属于第二阶段，不在本评分器中判断。
 """
 
 from __future__ import annotations
@@ -16,8 +16,49 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-DEFAULT_CASES_PATH = Path(__file__).with_name("agent_cases.json")
+DEFAULT_CASES_PATH = Path(__file__).with_name("system_cases.json")
 ALLOWED_SEVERITIES = {"critical", "major", "minor"}
+ABSENT_ENTITY_TEXTS = {
+    "",
+    "无",
+    "没有",
+    "暂无",
+    "暂无信息",
+    "未知",
+    "不详",
+    "不适用",
+    "待定",
+    "待提供",
+    "待补充",
+    "待确认",
+    "待明确",
+    "待确定",
+    "待收集",
+    "需要补充",
+    "需要明确",
+    "需要收集",
+    "需补充",
+    "需明确",
+    "需收集",
+    "未提供",
+    "未填写",
+    "未明确",
+    "未说明",
+    "未指定",
+    "未确定",
+    "尚未明确",
+    "尚未确定",
+    "暂未明确",
+    "暂未确定",
+    "没有提供",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "not provided",
+    "not specified",
+    "unknown",
+}
 
 REQUIRED_CASE_FIELDS = {
     "id",
@@ -30,8 +71,10 @@ REQUIRED_CASE_FIELDS = {
 
 REQUIRED_EXPECTED_FIELDS = {
     "required_scheduled_agents",
+    "forbidden_scheduled_agents",
     "required_executed_agents",
     "forbidden_executed_agents",
+    "forbidden_entity_fields",
     "status",
     "entities",
     "missing_fields",
@@ -84,6 +127,10 @@ def _validate_expected(expected: Any, location: str) -> None:
         expected["required_scheduled_agents"],
         f"{location}.required_scheduled_agents",
     )
+    forbidden_scheduled = _require_string_list(
+        expected["forbidden_scheduled_agents"],
+        f"{location}.forbidden_scheduled_agents",
+    )
     executed = _require_string_list(
         expected["required_executed_agents"],
         f"{location}.required_executed_agents",
@@ -92,12 +139,23 @@ def _validate_expected(expected: Any, location: str) -> None:
         expected["forbidden_executed_agents"],
         f"{location}.forbidden_executed_agents",
     )
+    forbidden_entity_fields = _require_string_list(
+        expected["forbidden_entity_fields"],
+        f"{location}.forbidden_entity_fields",
+    )
 
     not_scheduled = sorted(set(executed) - set(scheduled))
     if not_scheduled:
         raise DatasetValidationError(
             f"{location} requires executed agents that are not scheduled: "
             f"{', '.join(not_scheduled)}"
+        )
+
+    schedule_conflict = sorted(set(scheduled) & set(forbidden_scheduled))
+    if schedule_conflict:
+        raise DatasetValidationError(
+            f"{location} marks agents as both required and forbidden "
+            f"in schedule: {', '.join(schedule_conflict)}"
         )
 
     conflict = sorted(set(executed) & set(forbidden))
@@ -108,31 +166,18 @@ def _validate_expected(expected: Any, location: str) -> None:
         )
 
     _require_string(expected["status"], f"{location}.status")
-    _require_dict(expected["entities"], f"{location}.entities")
+    entities = _require_dict(expected["entities"], f"{location}.entities")
+    entity_conflict = sorted(set(entities) & set(forbidden_entity_fields))
+    if entity_conflict:
+        raise DatasetValidationError(
+            f"{location} marks entity fields as both required and forbidden: "
+            f"{', '.join(entity_conflict)}"
+        )
     _require_string_list(expected["missing_fields"], f"{location}.missing_fields")
     _require_dict(expected["memory"], f"{location}.memory")
 
-    for optional_field in ("must_contain", "must_not_contain_patterns"):
-        if optional_field in expected:
-            _require_string_list(
-                expected[optional_field],
-                f"{location}.{optional_field}",
-            )
-
-    for index, pattern in enumerate(
-        expected.get("must_not_contain_patterns", [])
-    ):
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            raise DatasetValidationError(
-                f"{location}.must_not_contain_patterns[{index}] "
-                f"is invalid: {exc}"
-            ) from exc
-
-
 def validate_dataset(dataset: Any) -> Dict[str, Any]:
-    """校验 Agent 评估数据集，并返回原数据。"""
+    """校验 System Evaluation 数据集，并返回原数据。"""
     dataset = _require_dict(dataset, "dataset")
     _require_string(dataset.get("dataset_version"), "dataset.dataset_version")
 
@@ -247,6 +292,43 @@ def _check_expected_preferences(
     return True
 
 
+def _is_absent_entity_value(value: Any) -> bool:
+    """识别空值及常见的“信息缺失”占位表达，而非只匹配某个词。"""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        # 去掉解释性括号，但保留括号外的真实值：
+        # “未提供（需要收集）”会归一为空，“苏州（历史推断）”仍是“苏州”。
+        normalized = re.sub(r"[（(][^）)]*[）)]", "", normalized).strip(
+            "()（）[]【】{}<>《》'\"。.!！?？ "
+        )
+        if normalized in ABSENT_ENTITY_TEXTS:
+            return True
+
+        # 模型可能组合多个同义占位词，例如“未指定，待收集”。
+        parts = [normalized]
+        for separator in ("，", ",", "、", "/", "；", ";", "|"):
+            parts = [
+                item
+                for part in parts
+                for item in part.split(separator)
+            ]
+        cleaned_parts = [part.strip() for part in parts if part.strip()]
+        return bool(cleaned_parts) and all(
+            part in ABSENT_ENTITY_TEXTS
+            for part in cleaned_parts
+        )
+    if isinstance(value, dict):
+        return not value or all(
+            _is_absent_entity_value(item)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple, set)):
+        return not value or all(_is_absent_entity_value(item) for item in value)
+    return False
+
+
 def _evaluate_memory(
     expected_memory: Dict[str, Any],
     actual: Dict[str, Any],
@@ -289,10 +371,17 @@ def _evaluate_memory(
         )
 
     if "pending_trip" in expected_memory:
-        checks["memory.pending_trip"] = (
-            actual.get("pending_trip", {})
-            == expected_memory["pending_trip"]
-        )
+        expected_pending = expected_memory["pending_trip"]
+        actual_pending = actual.get("pending_trip", {}) or {}
+        if expected_pending:
+            # 只断言业务必需字段，允许模型额外提取可选字段。
+            checks["memory.pending_trip"] = all(
+                actual_pending.get(key) == value
+                for key, value in expected_pending.items()
+            )
+        else:
+            # 空字典表示任务结束后必须真正清空待补全状态。
+            checks["memory.pending_trip"] = not actual_pending
 
     return checks
 
@@ -305,16 +394,19 @@ def evaluate_turn(
     scheduled_agents = set(actual.get("scheduled_agents", []))
     executed_agents = set(actual.get("executed_agents", []))
     required_scheduled = set(expected["required_scheduled_agents"])
+    forbidden_scheduled = set(expected["forbidden_scheduled_agents"])
     required_executed = set(expected["required_executed_agents"])
     forbidden_executed = set(expected["forbidden_executed_agents"])
 
     actual_entities = actual.get("entities", {}) or {}
     expected_entities = expected.get("entities", {})
-    response = str(actual.get("response", ""))
-
+    forbidden_entity_fields = expected.get("forbidden_entity_fields", [])
     checks: Dict[str, bool] = {
         "required_scheduled_agents": required_scheduled.issubset(
             scheduled_agents
+        ),
+        "forbidden_scheduled_agents": not bool(
+            forbidden_scheduled & scheduled_agents
         ),
         "required_executed_agents": required_executed.issubset(
             executed_agents
@@ -327,19 +419,12 @@ def evaluate_turn(
             actual_entities.get(key) == value
             for key, value in expected_entities.items()
         ),
+        "forbidden_entity_fields": all(
+            _is_absent_entity_value(actual_entities.get(field))
+            for field in forbidden_entity_fields
+        ),
         "missing_fields": set(actual.get("missing_fields", []))
         == set(expected.get("missing_fields", [])),
-        "response.must_contain": all(
-            text in response
-            for text in expected.get("must_contain", [])
-        ),
-        "response.must_not_contain_patterns": not any(
-            re.search(pattern, response)
-            for pattern in expected.get(
-                "must_not_contain_patterns",
-                [],
-            )
-        ),
     }
 
     checks.update(_evaluate_memory(expected["memory"], actual))
@@ -390,13 +475,13 @@ def evaluate_case(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Validate the Agent evaluation dataset",
+        description="Validate the System Evaluation dataset",
     )
     parser.add_argument(
         "--cases",
         type=Path,
         default=DEFAULT_CASES_PATH,
-        help="Path to agent_cases.json",
+        help="Path to system_cases.json",
     )
     args = parser.parse_args()
 

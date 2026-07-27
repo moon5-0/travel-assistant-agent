@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""运行真实多 Agent 链路评估并生成基线报告。
+"""运行真实 System Evaluation 并生成系统行为基线报告。
 
 先检查但不调用模型：
-    python evaluation/run_agent_eval.py --dry-run
+    python evaluation/run_system_eval.py --dry-run
 
 只运行一个场景一次：
-    python evaluation/run_agent_eval.py --case trip_missing_required_fields --runs 1
+    python evaluation/run_system_eval.py --case trip_missing_required_fields --runs 1
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from datetime import datetime
 from getpass import getpass
@@ -33,9 +34,9 @@ from agentscope.model import OpenAIChatModel
 from config import LLM_CONFIG, RESILIENCE_CONFIG, SYSTEM_CONFIG
 from config_agentscope import init_agentscope
 from context.memory_manager import MemoryManager
-from evaluation.agent_eval_runner import AgentEvaluationRunner
-from evaluation.agent_evaluator import DEFAULT_CASES_PATH, load_dataset
-from evaluation.trace_collector import AgentTraceCollector
+from evaluation.system_eval_runner import SystemEvaluationRunner
+from evaluation.system_evaluator import DEFAULT_CASES_PATH, load_dataset
+from evaluation.system_trace_collector import SystemTraceCollector
 from services.turn_executor import AgentTurnExecutor
 from utils.circuit_breaker import CircuitBreaker
 
@@ -50,13 +51,16 @@ def seed_initial_state(
 ) -> None:
     """把测试用例声明的偏好、行程和待补全状态写入隔离环境。"""
     for preference_type, value in initial_state.get("preferences", {}).items():
-        memory_manager.long_term.save_preference(preference_type, value)
+        memory_manager.long_term.save_preference(
+            preference_type,
+            deepcopy(value),
+        )
 
     for trip in initial_state.get("trip_history", []):
-        memory_manager.long_term.save_trip_history(dict(trip))
+        memory_manager.long_term.save_trip_history(deepcopy(trip))
 
     orchestrator.restore_pending_trip(
-        initial_state.get("pending_trip", {})
+        deepcopy(initial_state.get("pending_trip", {}))
     )
 
 
@@ -68,9 +72,9 @@ class RealRuntimeFactory:
 
     # 让创建和清理可以写成 async with
     @asynccontextmanager
-    # _call_可以把实例当成函数调用
+    # __call__ 让工厂实例可以像函数一样被运行器调用。
     async def __call__(self, case: Dict[str, Any], run_index: int):
-        with TemporaryDirectory(prefix="aligo-agent-eval-") as storage_path:
+        with TemporaryDirectory(prefix="aligo-system-eval-") as storage_path:
             safe_case_id = case["id"].replace("/", "_")
             memory_manager = MemoryManager(
                 user_id=f"eval-{safe_case_id}-{run_index}",
@@ -120,7 +124,7 @@ class RealRuntimeFactory:
                 case["initial_state"],
             )
             # 把 Collector 暂时交出去使用，环境先不要销毁
-            yield AgentTraceCollector(executor)
+            yield SystemTraceCollector(executor)
 
 
 def select_cases(
@@ -176,12 +180,12 @@ def build_model(temperature: float) -> OpenAIChatModel:
 
 def default_output_path() -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return DEFAULT_OUTPUT_DIR / f"agent-baseline-{timestamp}.json"
+    return DEFAULT_OUTPUT_DIR / f"system-baseline-{timestamp}.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the real Aligo multi-Agent evaluation",
+        description="Run the real Aligo System Evaluation",
     )
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument(
@@ -212,7 +216,7 @@ async def run_real_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
     selected_ids = [case["id"] for case in selected_cases]
 
     model = build_model(args.temperature)
-    runner = AgentEvaluationRunner(dataset, RealRuntimeFactory(model))
+    runner = SystemEvaluationRunner(dataset, RealRuntimeFactory(model))
     report = await runner.run(
         case_ids=selected_ids,
         runs_per_case=args.runs,

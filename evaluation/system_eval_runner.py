@@ -1,4 +1,4 @@
-"""Agent 场景评估运行器。
+"""System Evaluation 场景评估运行器。
 
 运行器负责场景隔离、多轮顺序执行和结果汇总；具体使用真实模型还是
 离线假实现，由 runtime_factory 决定。
@@ -9,10 +9,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Optional
 
-from evaluation.agent_evaluator import evaluate_case
+from evaluation.system_evaluator import evaluate_case
 
 
-class AgentEvaluationRunner:
+class SystemEvaluationRunner:
     """运行已校验的数据集，并汇总每个场景的评分结果。"""
 
     def __init__(

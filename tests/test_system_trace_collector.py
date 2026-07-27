@@ -1,8 +1,8 @@
-"""真实执行轨迹采集器的离线测试。"""
+"""System Evaluation 真实执行轨迹采集器的离线测试。"""
 
 import unittest
 
-from evaluation.trace_collector import AgentTraceCollector
+from evaluation.system_trace_collector import SystemTraceCollector
 
 
 class FakeLongTermMemory:
@@ -45,7 +45,7 @@ class FakeTurnExecutor:
         return self.result
 
 
-class TestAgentTraceCollector(unittest.IsolatedAsyncioTestCase):
+class TestSystemTraceCollector(unittest.IsolatedAsyncioTestCase):
     async def test_collects_route_entities_memory_and_pending_trip(self):
         result = {
             "intention": {
@@ -72,10 +72,11 @@ class TestAgentTraceCollector(unittest.IsolatedAsyncioTestCase):
             },
         }
         executor = FakeTurnExecutor(result, preferences={}, trips=[])
-        collector = AgentTraceCollector(executor)
+        collector = SystemTraceCollector(executor)
 
         trace = await collector.execute_turn("从苏州去北京")
 
+        self.assertEqual(trace["user_input"], "从苏州去北京")
         self.assertEqual(
             trace["scheduled_agents"],
             ["event_collection", "itinerary_planning"],
@@ -95,7 +96,7 @@ class TestAgentTraceCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace["history_usage"], "not_used")
 
     def test_detects_unconfirmed_history_auto_fill(self):
-        usage = AgentTraceCollector._detect_history_usage(
+        usage = SystemTraceCollector._detect_history_usage(
             user_input="按照我之前的酒店偏好规划北京行程",
             entities={
                 "origin": "苏州",
@@ -110,13 +111,12 @@ class TestAgentTraceCollector(unittest.IsolatedAsyncioTestCase):
                     "start_date": "2026-07-25",
                 }
             ],
-            response="已生成行程",
         )
 
         self.assertEqual(usage, "auto_filled")
 
     def test_detects_history_confirmation_requirement(self):
-        usage = AgentTraceCollector._detect_history_usage(
+        usage = SystemTraceCollector._detect_history_usage(
             user_input="按照我之前的酒店偏好规划北京行程",
             entities={"destination": "北京"},
             status="needs_clarification",
@@ -127,10 +127,93 @@ class TestAgentTraceCollector(unittest.IsolatedAsyncioTestCase):
                     "start_date": "2026-07-25",
                 }
             ],
-            response="请补充出发地、出发日期和行程天数",
         )
 
         self.assertEqual(usage, "confirmation_required")
+
+    def test_detects_explicitly_confirmed_history_reuse(self):
+        usage = SystemTraceCollector._detect_history_usage(
+            user_input="出发地和行程天数都按上次一样",
+            entities={"origin": "苏州", "destination": "北京"},
+            status="completed",
+            trip_history=[
+                {
+                    "origin": "苏州",
+                    "destination": "北京",
+                    "start_date": "2026-07-25",
+                }
+            ],
+        )
+
+        self.assertEqual(usage, "confirmed")
+
+    def test_equivalent_date_formats_are_treated_as_user_provided(self):
+        inputs = (
+            "2026年8月10日从苏州去北京",
+            "2026/8/10从苏州去北京",
+            "2026.08.10从苏州去北京",
+            "2026-8-10从苏州去北京",
+        )
+        for user_input in inputs:
+            with self.subTest(user_input=user_input):
+                usage = SystemTraceCollector._detect_history_usage(
+                    user_input=user_input,
+                    entities={"start_date": "2026-08-10"},
+                    status="completed",
+                    trip_history=[{"start_date": "2026-08-10"}],
+                )
+
+                self.assertEqual(usage, "not_used")
+
+    def test_unmentioned_matching_date_is_still_auto_filled(self):
+        usage = SystemTraceCollector._detect_history_usage(
+            user_input="再帮我规划一次北京行程",
+            entities={"start_date": "2026-08-10"},
+            status="completed",
+            trip_history=[{"start_date": "2026-08-10"}],
+        )
+
+        self.assertEqual(usage, "auto_filled")
+
+    def test_end_date_derived_from_user_start_and_duration_is_not_history(self):
+        usage = SystemTraceCollector._detect_history_usage(
+            user_input="2026年8月10日从苏州去北京3天",
+            entities={
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+            },
+            status="completed",
+            trip_history=[
+                {
+                    "start_date": "2026-08-10",
+                    "end_date": "2026-08-12",
+                    "duration_days": 3,
+                }
+            ],
+        )
+
+        self.assertEqual(usage, "not_used")
+
+    def test_duration_derived_from_user_start_and_end_is_not_history(self):
+        usage = SystemTraceCollector._detect_history_usage(
+            user_input="2026年8月10日至2026年8月12日去北京",
+            entities={
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+            },
+            status="completed",
+            trip_history=[
+                {
+                    "start_date": "2026-08-10",
+                    "end_date": "2026-08-12",
+                    "duration_days": 3,
+                }
+            ],
+        )
+
+        self.assertEqual(usage, "not_used")
 
 
 if __name__ == "__main__":

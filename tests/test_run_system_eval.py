@@ -1,10 +1,10 @@
-"""真实 Agent 评估入口中隔离环境初始化逻辑的离线测试。"""
+"""真实 System Evaluation 入口初始化逻辑的离线测试。"""
 
 from tempfile import TemporaryDirectory
 import unittest
 
 from context.memory_manager import MemoryManager
-from evaluation.run_agent_eval import (
+from evaluation.run_system_eval import (
     build_execution_summary,
     seed_initial_state,
     select_cases,
@@ -19,7 +19,7 @@ class FakeOrchestrator:
         self.pending_trip = dict(trip_data)
 
 
-class TestRealAgentEvaluationSetup(unittest.TestCase):
+class TestRealSystemEvaluationSetup(unittest.TestCase):
     def test_seed_initial_state_uses_isolated_memory(self):
         with TemporaryDirectory() as storage_path:
             memory = MemoryManager(
@@ -57,6 +57,33 @@ class TestRealAgentEvaluationSetup(unittest.TestCase):
                 orchestrator.pending_trip,
                 {"destination": "杭州"},
             )
+
+    def test_seed_initial_state_does_not_share_mutable_values(self):
+        initial_state = {
+            "preferences": {"hotel_brands": ["如家"]},
+            "trip_history": [],
+            "pending_trip": {"destination": "北京"},
+        }
+        with TemporaryDirectory() as storage_path:
+            memory = MemoryManager(
+                user_id="eval-user",
+                session_id="eval-session",
+                storage_path=storage_path,
+            )
+            orchestrator = FakeOrchestrator()
+
+            seed_initial_state(memory, orchestrator, initial_state)
+            memory.long_term.add_hotel_brand("汉庭")
+            orchestrator.pending_trip["origin"] = "苏州"
+
+        self.assertEqual(
+            initial_state["preferences"]["hotel_brands"],
+            ["如家"],
+        )
+        self.assertEqual(
+            initial_state["pending_trip"],
+            {"destination": "北京"},
+        )
 
     def test_select_cases_rejects_unknown_id(self):
         dataset = {

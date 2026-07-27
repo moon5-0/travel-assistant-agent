@@ -1,0 +1,1026 @@
+{
+  "dataset_version": "0.3.1",
+  "description": "差旅出行助手 System Evaluation v0.3 扩展场景，仅评估系统行为",
+  "default_context": {
+    "current_date": "2026-07-24",
+    "timezone": "Asia/Shanghai",
+    "runs_per_case": 3
+  },
+  "cases": [
+    {
+      "id": "trip_complete_basic",
+      "category": "trip_planning",
+      "severity": "critical",
+      "description": "完整行程信息应执行事项收集和行程规划",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "2026年8月10日从苏州去北京出差3天，请帮我规划行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_executed_agents": [
+              "preference"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "start_date": "2026-08-10",
+              "duration_days": 3,
+              "trip_purpose": "出差"
+            },
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "append_one"
+            }
+          }
+        }
+      ],
+      "tags": [
+        "happy-path",
+        "trip-memory"
+      ]
+    },
+    {
+      "id": "trip_missing_required_fields",
+      "category": "trip_planning",
+      "severity": "critical",
+      "description": "缺少出发地、日期和天数时应暂停规划并追问",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "帮我规划一次去北京的行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "itinerary_planning",
+              "preference"
+            ],
+            "forbidden_entity_fields": [
+              "origin",
+              "start_date",
+              "end_date",
+              "duration_days"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "destination": "北京"
+            },
+            "missing_fields": [
+              "origin",
+              "start_date",
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none"
+            }
+          }
+        }
+      ],
+      "tags": [
+        "clarification",
+        "dependency-boundary"
+      ]
+    },
+    {
+      "id": "trip_multi_turn_completion",
+      "category": "multi_turn_trip",
+      "severity": "critical",
+      "description": "用户分三轮补充字段后应恢复规划并清除待补全状态",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "帮我规划一次去北京的行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "itinerary_planning",
+              "preference"
+            ],
+            "forbidden_entity_fields": [
+              "origin",
+              "start_date",
+              "end_date",
+              "duration_days"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "destination": "北京"
+            },
+            "missing_fields": [
+              "origin",
+              "start_date",
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "destination": "北京"
+              }
+            }
+          }
+        },
+        {
+          "user_input": "从苏州出发",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "itinerary_planning",
+              "preference"
+            ],
+            "forbidden_entity_fields": [
+              "start_date",
+              "end_date",
+              "duration_days"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京"
+            },
+            "missing_fields": [
+              "start_date",
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "origin": "苏州",
+                "destination": "北京"
+              }
+            }
+          }
+        },
+        {
+          "user_input": "2026年8月10日出发，去3天",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_executed_agents": [
+              "preference"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "start_date": "2026-08-10",
+              "duration_days": 3
+            },
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "append_one",
+              "pending_trip": {}
+            }
+          }
+        }
+      ],
+      "tags": [
+        "clarification",
+        "multi-turn",
+        "state-recovery"
+      ]
+    },
+    {
+      "id": "missing_hotel_preference_must_not_reuse_trip_history",
+      "category": "memory_and_planning",
+      "severity": "critical",
+      "description": "查询不存在的酒店偏好时应诚实说明，且不得自动沿用历史行程参数",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [
+          {
+            "origin": "苏州",
+            "destination": "北京",
+            "start_date": "2026-07-25",
+            "end_date": "2026-07-27",
+            "purpose": "旅游"
+          }
+        ],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "按照我之前的酒店偏好规划北京行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "memory_query",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "memory_query",
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "preference",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [
+              "origin",
+              "start_date",
+              "end_date",
+              "duration_days",
+              "return_location",
+              "trip_purpose"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "destination": "北京"
+            },
+            "missing_fields": [
+              "origin",
+              "start_date",
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none"
+            },
+            "history_usage": "confirmation_required"
+          }
+        }
+      ],
+      "tags": [
+        "memory-read",
+        "history-confirmation",
+        "no-unauthorized-write",
+        "regression-real-case"
+      ]
+    },
+    {
+      "id": "preference_add_hotel_brand",
+      "category": "preference_write",
+      "severity": "critical",
+      "description": "用户明确追加酒店偏好时应保留旧值并写入新值，但不应规划行程",
+      "initial_state": {
+        "preferences": {
+          "hotel_brands": [
+            "如家"
+          ]
+        },
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "除了如家，以后出差我还喜欢住汉庭酒店",
+          "expected": {
+            "required_scheduled_agents": [
+              "preference"
+            ],
+            "forbidden_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "required_executed_agents": [
+              "preference"
+            ],
+            "forbidden_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {},
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "append",
+              "expected_preferences": {
+                "hotel_brands": [
+                  "如家",
+                  "汉庭"
+                ]
+              },
+              "trip_history_change": "none"
+            }
+          }
+        }
+      ],
+      "tags": [
+        "preference-write",
+        "memory-side-effect"
+      ]
+    },
+    {
+      "id": "trip_missing_destination_only",
+      "category": "trip_planning",
+      "severity": "critical",
+      "description": "只缺少目的地时应保留其他字段并暂停规划",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "2026年8月10日从苏州出发，出差3天，请帮我规划行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "memory_query",
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "memory_query",
+              "preference",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [
+              "destination"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "origin": "苏州",
+              "start_date": "2026-08-10",
+              "duration_days": 3,
+              "trip_purpose": "出差"
+            },
+            "missing_fields": [
+              "destination"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "origin": "苏州",
+                "start_date": "2026-08-10",
+                "duration_days": 3,
+                "trip_purpose": "出差"
+              }
+            }
+          }
+        }
+      ],
+      "tags": [
+        "single-missing-field",
+        "clarification",
+        "destination-boundary"
+      ]
+    },
+    {
+      "id": "trip_missing_start_date_only",
+      "category": "trip_planning",
+      "severity": "critical",
+      "description": "只缺少出发日期时不得擅自推断日期或执行规划",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "从苏州去北京出差3天，请帮我规划行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "memory_query",
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "memory_query",
+              "preference",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [
+              "start_date",
+              "end_date"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "duration_days": 3,
+              "trip_purpose": "出差"
+            },
+            "missing_fields": [
+              "start_date"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "origin": "苏州",
+                "destination": "北京",
+                "duration_days": 3,
+                "trip_purpose": "出差"
+              }
+            }
+          }
+        }
+      ],
+      "tags": [
+        "single-missing-field",
+        "clarification",
+        "date-boundary"
+      ]
+    },
+    {
+      "id": "trip_missing_duration_only",
+      "category": "trip_planning",
+      "severity": "critical",
+      "description": "只缺少行程时长时不得擅自推断结束日期或执行规划",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "2026年8月10日从苏州去北京出差，请帮我规划行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "memory_query",
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "memory_query",
+              "preference",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [
+              "end_date",
+              "duration_days"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "start_date": "2026-08-10",
+              "trip_purpose": "出差"
+            },
+            "missing_fields": [
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "trip_purpose": "出差"
+              }
+            }
+          }
+        }
+      ],
+      "tags": [
+        "single-missing-field",
+        "clarification",
+        "duration-boundary"
+      ]
+    },
+    {
+      "id": "trip_multi_turn_destination_correction",
+      "category": "multi_turn_trip",
+      "severity": "major",
+      "description": "用户补充时修改目的地，应覆盖旧值且不得误判为偏好修改",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "2026年8月10日从苏州去杭州，请帮我规划行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "preference",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [
+              "end_date",
+              "duration_days"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "origin": "苏州",
+              "destination": "杭州",
+              "start_date": "2026-08-10"
+            },
+            "missing_fields": [
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "origin": "苏州",
+                "destination": "杭州",
+                "start_date": "2026-08-10"
+              }
+            }
+          }
+        },
+        {
+          "user_input": "目的地改成北京，去3天",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_executed_agents": [
+              "preference"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "start_date": "2026-08-10",
+              "duration_days": 3
+            },
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "append_one",
+              "pending_trip": {}
+            }
+          }
+        }
+      ],
+      "tags": [
+        "multi-turn",
+        "field-correction",
+        "routing-boundary"
+      ]
+    },
+    {
+      "id": "trip_new_request_overrides_pending_task",
+      "category": "multi_turn_trip",
+      "severity": "critical",
+      "description": "用户明确重新规划完整新行程时，不得残留上一任务的目的地",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "帮我规划一次去北京的行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection"
+            ],
+            "forbidden_executed_agents": [
+              "preference",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [
+              "origin",
+              "start_date",
+              "end_date",
+              "duration_days"
+            ],
+            "status": "needs_clarification",
+            "entities": {
+              "destination": "北京"
+            },
+            "missing_fields": [
+              "origin",
+              "start_date",
+              "duration_days"
+            ],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {
+                "destination": "北京"
+              }
+            }
+          }
+        },
+        {
+          "user_input": "重新规划：2026年8月15日从上海去杭州2天",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_executed_agents": [
+              "preference"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {
+              "origin": "上海",
+              "destination": "杭州",
+              "start_date": "2026-08-15",
+              "duration_days": 2
+            },
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "append_one",
+              "pending_trip": {}
+            }
+          }
+        }
+      ],
+      "tags": [
+        "multi-turn",
+        "new-task",
+        "state-isolation"
+      ]
+    },
+    {
+      "id": "preference_query_is_read_only",
+      "category": "memory_query",
+      "severity": "major",
+      "description": "查询已保存偏好只能读取记忆，不得调用偏好写入或行程规划",
+      "initial_state": {
+        "preferences": {
+          "hotel_brands": [
+            "汉庭"
+          ]
+        },
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "我之前保存了哪些酒店品牌偏好？",
+          "expected": {
+            "required_scheduled_agents": [
+              "memory_query"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "required_executed_agents": [
+              "memory_query"
+            ],
+            "forbidden_executed_agents": [
+              "preference",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {},
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {}
+            },
+            "history_usage": "not_used"
+          }
+        }
+      ],
+      "tags": [
+        "memory-read",
+        "read-write-boundary"
+      ]
+    },
+    {
+      "id": "preference_replace_home_location",
+      "category": "preference_write",
+      "severity": "major",
+      "description": "用户搬家时应覆盖常驻地，不得追加成地点列表或触发行程",
+      "initial_state": {
+        "preferences": {
+          "home_location": "苏州"
+        },
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "我搬到上海了，以后默认出发地改成上海",
+          "expected": {
+            "required_scheduled_agents": [
+              "preference"
+            ],
+            "forbidden_scheduled_agents": [
+              "memory_query",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "required_executed_agents": [
+              "preference"
+            ],
+            "forbidden_executed_agents": [
+              "memory_query",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {},
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "replace",
+              "expected_preferences": {
+                "home_location": "上海"
+              },
+              "trip_history_change": "none",
+              "pending_trip": {}
+            }
+          }
+        }
+      ],
+      "tags": [
+        "preference-write",
+        "replace",
+        "routing-boundary"
+      ]
+    },
+    {
+      "id": "preference_duplicate_append_is_idempotent",
+      "category": "preference_write",
+      "severity": "major",
+      "description": "重复追加相同酒店品牌时不得生成重复偏好值",
+      "initial_state": {
+        "preferences": {
+          "hotel_brands": [
+            "汉庭"
+          ]
+        },
+        "trip_history": [],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "我还喜欢汉庭酒店",
+          "expected": {
+            "required_scheduled_agents": [
+              "preference"
+            ],
+            "forbidden_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "required_executed_agents": [
+              "preference"
+            ],
+            "forbidden_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {},
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {}
+            }
+          }
+        }
+      ],
+      "tags": [
+        "preference-write",
+        "idempotency",
+        "deduplication"
+      ]
+    },
+    {
+      "id": "history_explicit_reuse_is_allowed",
+      "category": "memory_and_planning",
+      "severity": "critical",
+      "description": "用户明确授权按上次行程复用时，可以使用历史出发地和时长",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [
+          {
+            "origin": "苏州",
+            "destination": "北京",
+            "start_date": "2026-07-10",
+            "end_date": "2026-07-12",
+            "duration_days": 3,
+            "purpose": "出差"
+          }
+        ],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "2026年8月20日再去北京，出发地和行程天数都按上次一样，帮我规划行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "memory_query",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "preference"
+            ],
+            "required_executed_agents": [
+              "memory_query",
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_executed_agents": [
+              "preference"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "start_date": "2026-08-20",
+              "duration_days": 3
+            },
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "append_one",
+              "pending_trip": {}
+            },
+            "history_usage": "confirmed"
+          }
+        }
+      ],
+      "tags": [
+        "memory-read",
+        "explicit-consent",
+        "history-reuse"
+      ]
+    },
+    {
+      "id": "duplicate_trip_history_is_idempotent",
+      "category": "trip_memory",
+      "severity": "major",
+      "description": "完全相同的行程再次规划时不得重复写入历史记录",
+      "initial_state": {
+        "preferences": {},
+        "trip_history": [
+          {
+            "origin": "苏州",
+            "destination": "北京",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "duration_days": 3,
+            "purpose": "出差"
+          }
+        ],
+        "pending_trip": {}
+      },
+      "turns": [
+        {
+          "user_input": "2026年8月10日从苏州去北京出差3天，请重新生成行程",
+          "expected": {
+            "required_scheduled_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_scheduled_agents": [
+              "memory_query",
+              "preference"
+            ],
+            "required_executed_agents": [
+              "event_collection",
+              "itinerary_planning"
+            ],
+            "forbidden_executed_agents": [
+              "memory_query",
+              "preference"
+            ],
+            "forbidden_entity_fields": [],
+            "status": "completed",
+            "entities": {
+              "origin": "苏州",
+              "destination": "北京",
+              "start_date": "2026-08-10",
+              "duration_days": 3,
+              "trip_purpose": "出差"
+            },
+            "missing_fields": [],
+            "memory": {
+              "preferences_change": "none",
+              "trip_history_change": "none",
+              "pending_trip": {}
+            }
+          }
+        }
+      ],
+      "tags": [
+        "trip-memory",
+        "idempotency",
+        "deduplication"
+      ]
+    }
+  ]
+}
