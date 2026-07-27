@@ -4,6 +4,7 @@ PyYAML==6.0.2
 
 # 多智能体框架
 agentscope==1.0.16
+pydantic>=2.7.0,<3.0.0  # IntentionAgent 结构化输出校验
 
 # LLM 调用
 requests==2.32.3

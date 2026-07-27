@@ -20,6 +20,7 @@ import json
 import logging
 from utils.skill_loader import SkillLoader
 from utils.json_parser import extract_json_from_async_response, robust_json_parse
+from utils.intention_output import validate_intention_result
 
 logger = logging.getLogger(__name__)
 
@@ -132,11 +133,11 @@ class IntentionAgent(AgentBase):
 【任务要求】
 请按以下步骤进行分析：
 
-**第1步：推理过程生成**
+**第1步：生成简要决策依据**
 - 分析用户query的核心诉求
 - 识别query中的关键实体和意图信号
 - 判断是否需要结合对话历史进行消歧
-- 说明如何融合上下文信息进行推理
+- reasoning 只用一句话说明调度依据，不复述用户原文，不换行
 
 **第2步：多意图识别（原因）**
 - 识别所有可能的用户意图（可以是多个）
@@ -157,11 +158,11 @@ class IntentionAgent(AgentBase):
 必须严格按照以下JSON格式输出（**只输出JSON，不要有其他文本**）：
 
 {{
-    "reasoning": "这里是详细的推理过程，包含第1步的分析，说明如何理解用户query，如何结合上下文，如何识别意图信号",
+    "reasoning": "一句话说明意图判断和调度依据，不复述用户原文",
 
     "intents": [
         {{
-            "type": "意图类型（如：itinerary_planning, preference_collection, information_query等）",
+            "type": "意图类型（使用 itinerary_planning、preference、information_query、memory_query、rag_knowledge、event_collection）",
             "confidence": 0.95,
             "description": "该意图的具体说明",
             "reason": "为什么识别出该意图的原因"
@@ -214,43 +215,110 @@ class IntentionAgent(AgentBase):
 """
 
         # 调用 LLM。连接、超时等异常继续抛给上层 retry_with_backoff；
-        # 只有响应格式异常才在本 Agent 内使用默认调度结果降级。
+        # 只有响应格式或结构异常才在本 Agent 内尝试一次定向修复。
         messages = [
             {"role": "system", "content": "你是一个高级意图识别专家。只输出JSON格式的结果，不要输出其他文本。"},
             {"role": "user", "content": prompt}
         ]
         try:
-            response = await self.model(messages)
+            # JSON mode 仅作用于 IntentionAgent，不影响其他需要自然语言输出的 Agent。
+            response = await self.model(
+                messages,
+                response_format={"type": "json_object"},
+            )
         except Exception as e:
             logger.error(f"Intent model call failed: {e}")
             raise
 
+        # 消费流时发生的网络异常不属于格式问题，应继续抛给上层退避重试。
+        text = await extract_json_from_async_response(response)
         try:
-            text = await extract_json_from_async_response(response)
-            result = robust_json_parse(text)
-        except Exception as e:
-            logger.error(f"Intent response parse failed: {e}")
-            result = {
-                "reasoning": f"意图识别出错，使用默认策略。错误: {str(e)}",
-                "intents": [
-                    {
-                        "type": "information_query",
-                        "confidence": 0.5,
-                        "description": "默认查询意图",
-                        "reason": "无法解析用户意图，使用默认策略"
-                    }
-                ],
-                "key_entities": {},
-                "rewritten_query": user_query,
-                "agent_schedule": [
-                    {
-                        "agent_name": "information_query",
-                        "priority": 1,
-                        "reason": "默认查询",
-                        "expected_output": "查询结果"
-                    }
-                ]
-            }
+            result = self._parse_and_validate(text)
+        except ValueError as first_error:
+            logger.warning(
+                "Intent response invalid, attempting one repair: %s",
+                first_error,
+            )
+            result = await self._repair_or_default(
+                user_query=user_query,
+                invalid_text=text,
+                validation_error=first_error,
+            )
 
         # 将结果转换为JSON字符串，因为Msg的content必须是字符串
         return Msg(name=self.name, content=json.dumps(result, ensure_ascii=False), role="assistant")
+
+    @staticmethod
+    def _parse_and_validate(text: str) -> dict:
+        """先做 JSON 容错解析，再校验调度链路真正依赖的数据结构。"""
+        return validate_intention_result(robust_json_parse(text))
+
+    async def _repair_or_default(
+        self,
+        user_query: str,
+        invalid_text: str,
+        validation_error: Exception,
+    ) -> dict:
+        """只请求模型修复一次；仍失败时保留项目原有降级行为。"""
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是JSON格式修复器。只修复格式和字段结构，不改变原有意图。"
+                    "只输出一个合法JSON对象，不要输出解释或Markdown。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"原始用户问题：{user_query}\n"
+                    "必须包含 reasoning、intents、key_entities、rewritten_query、"
+                    "agent_schedule 五个字段。agent_schedule 必须是数组，"
+                    "其中 agent_name 只能使用 memory_query、itinerary_planning、"
+                    "preference、information_query、rag_knowledge、event_collection，"
+                    "priority 必须是大于等于1的整数。\n"
+                    f"校验错误：{validation_error}\n"
+                    "待修复内容：\n"
+                    f"{invalid_text[:4000]}"
+                ),
+            },
+        ]
+
+        # 模型连接异常仍交给上层重试；这里只处理第二次结果仍无法解析的情况。
+        response = await self.model(
+            repair_messages,
+            response_format={"type": "json_object"},
+        )
+        repaired_text = await extract_json_from_async_response(response)
+        try:
+            result = self._parse_and_validate(repaired_text)
+            logger.info("Intent response repaired successfully")
+            return result
+        except ValueError as repair_error:
+            logger.error("Intent response repair failed: %s", repair_error)
+            return self._default_result(user_query, repair_error)
+
+    @staticmethod
+    def _default_result(user_query: str, error: Exception) -> dict:
+        """连续两次结构化输出失败时，沿用现有 information_query 降级。"""
+        return {
+            "reasoning": f"意图识别出错，使用默认策略。错误: {str(error)}",
+            "intents": [
+                {
+                    "type": "information_query",
+                    "confidence": 0.5,
+                    "description": "默认查询意图",
+                    "reason": "无法解析用户意图，使用默认策略",
+                }
+            ],
+            "key_entities": {},
+            "rewritten_query": user_query,
+            "agent_schedule": [
+                {
+                    "agent_name": "information_query",
+                    "priority": 1,
+                    "reason": "默认查询",
+                    "expected_output": "查询结果",
+                }
+            ],
+        }
