@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 # 这些偏好在业务上允许多个值，持久化时必须始终保持列表结构。
 COLLECTION_PREFERENCE_TYPES = frozenset({"hotel_brands", "airlines"})
 
+# 模型可能使用语义相近的字段名；进入长期记忆前统一成业务标准字段。
+PREFERENCE_TYPE_ALIASES = {
+    "default_departure": "home_location",
+}
+
 
 class LongTermMemory:
     """
@@ -110,7 +115,25 @@ class LongTermMemory:
             if fixed_prefs != data["preferences"]:
                 data["preferences"] = fixed_prefs
 
-        # 4. 修复旧数据中集合型偏好被保存成字符串的问题。
+        # 4. 合并旧数据中的字段别名；同一标准字段重复时，后写入的值生效。
+        normalized_preferences = []
+        preference_positions = {}
+        for pref in data.get("preferences", []):
+            if not isinstance(pref, dict):
+                continue
+            normalized_pref = dict(pref)
+            pref_type = self._normalize_preference_type(pref.get("type"))
+            normalized_pref["type"] = pref_type
+            if pref_type in preference_positions:
+                normalized_preferences[
+                    preference_positions[pref_type]
+                ] = normalized_pref
+            else:
+                preference_positions[pref_type] = len(normalized_preferences)
+                normalized_preferences.append(normalized_pref)
+        data["preferences"] = normalized_preferences
+
+        # 5. 修复旧数据中集合型偏好被保存成字符串的问题。
         for pref in data.get("preferences", []):
             if not isinstance(pref, dict):
                 continue
@@ -153,6 +176,11 @@ class LongTermMemory:
             logger.error(f"Failed to save long-term memory: {e}")
 
     @staticmethod
+    def _normalize_preference_type(pref_type: str) -> str:
+        """将模型常见别名统一为长期记忆使用的标准字段。"""
+        return PREFERENCE_TYPE_ALIASES.get(pref_type, pref_type)
+
+    @staticmethod
     def _normalize_preference_value(pref_type: str, value: Any) -> Any:
         """按偏好字段合同统一数据形状，并对集合值去重。"""
         if pref_type not in COLLECTION_PREFERENCE_TYPES:
@@ -177,6 +205,7 @@ class LongTermMemory:
         Returns:
             True 表示数据发生变化；False 表示与已有偏好相同。
         """
+        pref_type = self._normalize_preference_type(pref_type)
         normalized_value = self._normalize_preference_value(pref_type, value)
 
         # 查找是否已存在该类型的偏好
@@ -222,6 +251,7 @@ class LongTermMemory:
                 result[pref.get("type")] = pref.get("value")
             return result
         else:
+            pref_type = self._normalize_preference_type(pref_type)
             # 查找特定类型的偏好
             for pref in preferences:
                 if pref.get("type") == pref_type:

@@ -147,6 +147,16 @@ class TestMemoryManager(TemporaryMemoryTestCase):
         memory.save_preference("home_location", "苏州")
         self.assertEqual(memory.get_preference("home_location"), "苏州")
 
+    def test_default_departure_alias_updates_home_location(self):
+        memory = self.create_manager().long_term
+        memory.save_preference("home_location", "苏州")
+
+        changed = memory.save_preference("default_departure", "上海")
+
+        self.assertTrue(changed)
+        self.assertEqual(memory.get_preference("home_location"), "上海")
+        self.assertNotIn("default_departure", memory.get_preference())
+
     def test_trip_statistics_and_clear_history_preserve_preferences(self):
         manager = self.create_manager()
         memory = manager.long_term
