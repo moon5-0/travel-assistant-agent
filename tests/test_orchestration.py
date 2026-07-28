@@ -682,6 +682,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                     "destination": "杭州",
                     "start_date": "2026-07-14",
                     "end_date": "2026-07-16",
+                    "duration_days": None,
                     "purpose": "出差",
                 }
             ],
