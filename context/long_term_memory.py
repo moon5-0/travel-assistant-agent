@@ -279,13 +279,52 @@ class LongTermMemory:
             return messages[-limit:]
         return messages
 
-    def save_trip_history(self, trip_info: Dict[str, Any]):
+    @staticmethod
+    def _trip_identity(trip_info: Dict[str, Any]):
+        """生成行程业务唯一键；信息不足时不贸然判重。"""
+        identity_fields = ("origin", "destination", "start_date")
+        values = []
+        for field in identity_fields:
+            value = trip_info.get(field)
+            if value in (None, ""):
+                return None
+            values.append(str(value).strip().casefold())
+        return tuple(values)
+
+    def save_trip_history(self, trip_info: Dict[str, Any]) -> bool:
         """
-        保存行程历史
+        幂等保存行程历史。
 
         Args:
             trip_info: 行程信息
+
+        Returns:
+            True 表示新增记录；False 表示命中已有行程。
         """
+        trip_identity = self._trip_identity(trip_info)
+        if trip_identity is not None:
+            for existing_trip in self.data["trip_history"]:
+                if self._trip_identity(existing_trip) != trip_identity:
+                    continue
+
+                # 同一行程再次生成时不重复计数；若新结果带来更完整的信息，
+                # 则补充到原记录中，但保留原 trip_id 和 timestamp。
+                changed = False
+                for key, value in trip_info.items():
+                    if key in {"trip_id", "timestamp"}:
+                        continue
+                    if value not in (None, "", []) and existing_trip.get(key) != value:
+                        existing_trip[key] = value
+                        changed = True
+                if changed:
+                    self._save()
+
+                logger.info(
+                    "Skipped duplicate trip history: %s",
+                    existing_trip.get("trip_id", "unknown"),
+                )
+                return False
+
         trip_record = {
             "trip_id": f"trip_{len(self.data['trip_history']) + 1}",
             "timestamp": datetime.now().isoformat(),
@@ -305,6 +344,7 @@ class LongTermMemory:
 
         self._save()
         logger.info(f"Saved trip history: {trip_record['trip_id']}")
+        return True
 
     def get_trip_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """

@@ -687,6 +687,7 @@ class OrchestrationAgent(AgentBase):
                     destination = event_data.get("destination")
                     start_date = event_data.get("start_date")
                     end_date = event_data.get("end_date")
+                    duration_days = event_data.get("duration_days")
                     purpose = event_data.get("trip_purpose", "旅游")
 
                     # 保存到长期记忆（只要有目的地就保存）
@@ -696,6 +697,7 @@ class OrchestrationAgent(AgentBase):
                             "destination": destination,
                             "start_date": start_date,
                             "end_date": end_date,
+                            "duration_days": duration_days,
                             "purpose": purpose
                         })
                         logger.info(f"Saved trip to long-term memory: {origin} -> {destination}")

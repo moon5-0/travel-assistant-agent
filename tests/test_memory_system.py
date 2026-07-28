@@ -151,6 +151,34 @@ class TestMemoryManager(TemporaryMemoryTestCase):
         self.assertEqual(memory.get_statistics()["total_trips"], 0)
         self.assertEqual(memory.get_preference("seat_preference"), "靠窗")
 
+    def test_duplicate_trip_history_is_idempotent(self):
+        memory = self.create_manager().long_term
+        initial_trip = {
+            "origin": "苏州",
+            "destination": "北京",
+            "start_date": "2026-08-10",
+            "purpose": "出差",
+        }
+        completed_trip = {
+            **initial_trip,
+            "end_date": "2026-08-12",
+            "duration_days": 3,
+        }
+
+        first_created = memory.save_trip_history(initial_trip)
+        second_created = memory.save_trip_history(completed_trip)
+        third_created = memory.save_trip_history(dict(completed_trip))
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertFalse(third_created)
+        self.assertEqual(len(memory.get_trip_history(limit=None)), 1)
+        saved_trip = memory.get_trip_history(limit=None)[0]
+        self.assertEqual(saved_trip["end_date"], "2026-08-12")
+        self.assertEqual(saved_trip["duration_days"], 3)
+        self.assertEqual(memory.get_statistics()["total_trips"], 1)
+        self.assertEqual(memory.get_frequent_destinations(), [("北京", 1)])
+
     def test_same_user_can_read_long_term_memory_in_a_new_session(self):
         first_session = self.create_manager(session_id="session_a", user_id="same_user")
         first_session.add_message("user", "旧会话消息")
