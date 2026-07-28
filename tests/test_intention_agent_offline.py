@@ -95,6 +95,93 @@ def make_agent(model):
 
 
 class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
+    async def test_history_preference_trip_adds_collection_and_removes_write_agent(self):
+        model_output = json.dumps({
+            "reasoning": "用户希望引用历史酒店偏好规划行程",
+            "intents": [
+                {"type": "memory_query", "confidence": 0.95},
+                {"type": "itinerary_planning", "confidence": 0.95},
+            ],
+            "key_entities": {"destination": "北京"},
+            "rewritten_query": "按照历史酒店偏好规划北京行程",
+            "agent_schedule": [
+                {"agent_name": "memory_query", "priority": 1},
+                {"agent_name": "preference", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+        }, ensure_ascii=False)
+        agent = make_agent(FakeModel(content=model_output))
+
+        response = await agent.reply(
+            Msg(
+                name="User",
+                content="按照我之前的酒店偏好规划北京行程",
+                role="user",
+            )
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(
+            [item["agent_name"] for item in result["agent_schedule"]],
+            ["memory_query", "event_collection", "itinerary_planning"],
+        )
+
+    async def test_saved_preference_question_routes_to_memory_only(self):
+        model_output = json.dumps({
+            "reasoning": "用户在查询信息",
+            "intents": [
+                {"type": "information_query", "confidence": 0.8},
+            ],
+            "key_entities": {},
+            "rewritten_query": "查询保存的酒店品牌偏好",
+            "agent_schedule": [
+                {"agent_name": "information_query", "priority": 1},
+            ],
+        }, ensure_ascii=False)
+        agent = make_agent(FakeModel(content=model_output))
+
+        response = await agent.reply(
+            Msg(
+                name="User",
+                content="我之前保存了哪些酒店品牌偏好？",
+                role="user",
+            )
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(
+            [item["agent_name"] for item in result["agent_schedule"]],
+            ["memory_query"],
+        )
+        self.assertEqual(
+            [item["type"] for item in result["intents"]],
+            ["memory_query"],
+        )
+
+    async def test_explicit_preference_update_keeps_preference_agent(self):
+        model_output = json.dumps({
+            "reasoning": "用户正在追加酒店偏好",
+            "intents": [
+                {"type": "preference", "confidence": 0.98},
+            ],
+            "key_entities": {"other": "汉庭"},
+            "rewritten_query": "追加汉庭酒店偏好",
+            "agent_schedule": [
+                {"agent_name": "preference", "priority": 1},
+            ],
+        }, ensure_ascii=False)
+        agent = make_agent(FakeModel(content=model_output))
+
+        response = await agent.reply(
+            Msg(name="User", content="我还喜欢汉庭酒店", role="user")
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(
+            [item["agent_name"] for item in result["agent_schedule"]],
+            ["preference"],
+        )
+
     async def test_uses_robust_parser_for_markdown_and_common_format_issues(self):
         model_output = """模型分析：
 ```json

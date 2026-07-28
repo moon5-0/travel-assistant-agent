@@ -21,6 +21,7 @@ import logging
 from utils.skill_loader import SkillLoader
 from utils.json_parser import extract_json_from_async_response, robust_json_parse
 from utils.intention_output import validate_intention_result
+from utils.intention_routing import normalize_intention_routing
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,8 @@ class IntentionAgent(AgentBase):
 优先级规则：
 - memory_query 优先于 information_query（当问题涉及用户自己的历史时）
 - 如果用户明确询问"我的"、"我过去的"，必须识别为 memory_query
+- 查询或引用已保存的偏好属于 memory_query，只有新增、修改、删除偏好才调用 preference
+- 只要调用 itinerary_planning，就必须先调用 event_collection 收集并校验行程字段
 
 【任务要求】
 请按以下步骤进行分析：
@@ -232,6 +235,7 @@ class IntentionAgent(AgentBase):
 
         # 消费流时发生的网络异常不属于格式问题，应继续抛给上层退避重试。
         text = await extract_json_from_async_response(response)
+        should_normalize_routing = True
         try:
             result = self._parse_and_validate(text)
         except ValueError as first_error:
@@ -239,11 +243,14 @@ class IntentionAgent(AgentBase):
                 "Intent response invalid, attempting one repair: %s",
                 first_error,
             )
-            result = await self._repair_or_default(
+            result, should_normalize_routing = await self._repair_or_default(
                 user_query=user_query,
                 invalid_text=text,
                 validation_error=first_error,
             )
+
+        if should_normalize_routing:
+            result = normalize_intention_routing(result, user_query)
 
         # 将结果转换为JSON字符串，因为Msg的content必须是字符串
         return Msg(name=self.name, content=json.dumps(result, ensure_ascii=False), role="assistant")
@@ -258,7 +265,7 @@ class IntentionAgent(AgentBase):
         user_query: str,
         invalid_text: str,
         validation_error: Exception,
-    ) -> dict:
+    ) -> tuple[dict, bool]:
         """只请求模型修复一次；仍失败时保留项目原有降级行为。"""
         repair_messages = [
             {
@@ -293,10 +300,10 @@ class IntentionAgent(AgentBase):
         try:
             result = self._parse_and_validate(repaired_text)
             logger.info("Intent response repaired successfully")
-            return result
+            return result, True
         except ValueError as repair_error:
             logger.error("Intent response repair failed: %s", repair_error)
-            return self._default_result(user_query, repair_error)
+            return self._default_result(user_query, repair_error), False
 
     @staticmethod
     def _default_result(user_query: str, error: Exception) -> dict:
