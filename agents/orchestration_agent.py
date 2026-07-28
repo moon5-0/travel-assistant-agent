@@ -63,6 +63,14 @@ class OrchestrationAgent(AgentBase):
         """清除当前会话中尚未完成的行程信息。"""
         self._pending_trip_data.clear()
 
+    def get_pending_trip(self) -> Dict[str, Any]:
+        """返回待补全行程的副本，供状态展示和执行轨迹采集使用。"""
+        return dict(self._pending_trip_data)
+
+    def restore_pending_trip(self, trip_data: Dict[str, Any]) -> None:
+        """恢复待补全行程，供会话恢复和隔离评估环境初始化使用。"""
+        self._pending_trip_data = dict(trip_data or {})
+
     async def reply(self, x: Optional[Union[Msg, List[Msg]]] = None) -> Msg:
         """
         协调执行流程

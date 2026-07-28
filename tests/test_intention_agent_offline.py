@@ -48,15 +48,39 @@ class FakeResponse:
         self.content = content
 
 
+class FailingStreamResponse:
+    """模拟模型已建立连接，但读取流时发生网络中断。"""
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise ConnectionError("stream interrupted")
+
+
 class FakeModel:
-    def __init__(self, content=None, error=None):
+    def __init__(self, content=None, error=None, responses=None):
         self.content = content
         self.error = error
+        self.responses = list(responses or [])
+        self.calls = []
 
-    async def __call__(self, _messages):
+    async def __call__(self, messages, **kwargs):
+        self.calls.append({"messages": messages, "kwargs": kwargs})
         if self.error:
             raise self.error
+        if self.responses:
+            return FakeResponse(self.responses.pop(0))
         return FakeResponse(self.content)
+
+
+class FailingStreamModel:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, messages, **kwargs):
+        self.calls.append({"messages": messages, "kwargs": kwargs})
+        return FailingStreamResponse()
 
 
 class FakeSkillLoader:
@@ -77,7 +101,8 @@ class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
 {'reasoning': '查询天气', 'intents': [], 'key_entities': {'city': '杭州'},
  'rewritten_query': '杭州天气', 'agent_schedule': [],}
 ```"""
-        agent = make_agent(FakeModel(content=model_output))
+        model = FakeModel(content=model_output)
+        agent = make_agent(model)
 
         response = await agent.reply(
             Msg(name="User", content="杭州天气怎么样？", role="user")
@@ -86,9 +111,81 @@ class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["rewritten_query"], "杭州天气")
         self.assertEqual(result["key_entities"]["city"], "杭州")
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(
+            model.calls[0]["kwargs"]["response_format"],
+            {"type": "json_object"},
+        )
+
+    async def test_invalid_json_is_repaired_once_and_keeps_original_intent(self):
+        invalid_output = """{
+  "reasoning": "用户说"帮我规划北京行程"，属于行程规划",
+  "intents": [{"type": "itinerary_planning", "confidence": 0.98}],
+  "key_entities": {"destination": "北京"},
+  "rewritten_query": "帮我规划北京行程",
+  "agent_schedule": [{"agent_name": "itinerary_planning", "priority": 2}]
+}"""
+        repaired_output = json.dumps({
+            "reasoning": "用户需要规划北京行程",
+            "intents": [
+                {"type": "itinerary_planning", "confidence": 0.98},
+            ],
+            "key_entities": {"destination": "北京"},
+            "rewritten_query": "帮我规划北京行程",
+            "agent_schedule": [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+        }, ensure_ascii=False)
+        model = FakeModel(responses=[invalid_output, repaired_output])
+        agent = make_agent(model)
+
+        response = await agent.reply(
+            Msg(name="User", content="帮我规划北京行程", role="user")
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(
+            [item["agent_name"] for item in result["agent_schedule"]],
+            ["event_collection", "itinerary_planning"],
+        )
+        self.assertIn("校验错误", model.calls[1]["messages"][1]["content"])
+
+    async def test_valid_json_with_invalid_schema_is_repaired_once(self):
+        invalid_schema = json.dumps({
+            "reasoning": "用户需要规划行程",
+            "intents": [],
+            "key_entities": {"destination": "北京"},
+            "rewritten_query": "规划北京行程",
+            "agent_schedule": "itinerary_planning",
+        }, ensure_ascii=False)
+        repaired_output = json.dumps({
+            "reasoning": "用户需要规划行程",
+            "intents": [],
+            "key_entities": {"destination": "北京"},
+            "rewritten_query": "规划北京行程",
+            "agent_schedule": [
+                {"agent_name": "event_collection", "priority": 1},
+            ],
+        }, ensure_ascii=False)
+        model = FakeModel(responses=[invalid_schema, repaired_output])
+        agent = make_agent(model)
+
+        response = await agent.reply(
+            Msg(name="User", content="规划北京行程", role="user")
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(
+            result["agent_schedule"][0]["agent_name"],
+            "event_collection",
+        )
 
     async def test_invalid_model_format_uses_default_schedule(self):
-        agent = make_agent(FakeModel(content="无法输出结构化结果"))
+        model = FakeModel(content="无法输出结构化结果")
+        agent = make_agent(model)
 
         response = await agent.reply(
             Msg(name="User", content="帮我查一下", role="user")
@@ -97,6 +194,7 @@ class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["agent_schedule"][0]["agent_name"], "information_query")
         self.assertEqual(result["rewritten_query"], "帮我查一下")
+        self.assertEqual(len(model.calls), 2)
 
     async def test_model_connection_error_propagates_to_retry_layer(self):
         agent = make_agent(FakeModel(error=ConnectionError("LLM unavailable")))
@@ -105,6 +203,17 @@ class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
             await agent.reply(
                 Msg(name="User", content="杭州天气怎么样？", role="user")
             )
+
+    async def test_stream_connection_error_propagates_without_format_repair(self):
+        model = FailingStreamModel()
+        agent = make_agent(model)
+
+        with self.assertRaisesRegex(ConnectionError, "stream interrupted"):
+            await agent.reply(
+                Msg(name="User", content="杭州天气怎么样？", role="user")
+            )
+
+        self.assertEqual(len(model.calls), 1)
 
 
 if __name__ == "__main__":

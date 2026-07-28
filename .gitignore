@@ -62,6 +62,10 @@ tmp/
 # Logs
 *.log
 
+# Generated Agent evaluation reports (reproducible local artifacts)
+evaluation/results/agent-baseline-*.json
+evaluation/results/system-baseline-*.json
+
 # OS
 .DS_Store
 Thumbs.db

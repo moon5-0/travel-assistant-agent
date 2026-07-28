@@ -30,9 +30,10 @@ from config_agentscope import init_agentscope
 from config import LLM_CONFIG, SYSTEM_CONFIG, RESILIENCE_CONFIG
 from context.memory_manager import MemoryManager
 from utils.circuit_breaker import CircuitBreaker, CircuitOpenError
-from utils.llm_resilience import retry_with_backoff, run_health_check as check_llm_health
+from utils.llm_resilience import run_health_check as check_llm_health
 from agents.intention_agent import IntentionAgent
 from agents.orchestration_agent import OrchestrationAgent
+from services.turn_executor import AgentTurnExecutor, InvalidIntentionResultError
 # 移除其他智能体的导入，改用懒加载
 
 
@@ -50,6 +51,7 @@ class AligoCLI:
         self.model = None
         self._agent_cache = {}  # 智能体缓存
         self.circuit_breaker = None  # 在 initialize_system 中从 RESILIENCE_CONFIG 初始化
+        self.turn_executor = None
 
     def _ensure_api_key(self):
         """确保启动时已提供 LLM API Key。
@@ -169,102 +171,40 @@ class AligoCLI:
                 half_open_successes=rc.get("circuit_half_open_successes", 2),
             )
 
+            # 核心业务执行器不负责终端展示，可同时被 CLI 和评估器复用。
+            self.turn_executor = AgentTurnExecutor(
+                intention_agent=self.intention_agent,
+                orchestrator=self.orchestrator,
+                memory_manager=self.memory_manager,
+                circuit_breaker=self.circuit_breaker,
+                resilience_config=RESILIENCE_CONFIG,
+            )
+
         self.console.print(f"✓ 就绪 (用户: {self.user_id}) - 输入 help 查看帮助\n", style="green")
 
     async def process_query(self, user_input: str):
-        """
-        处理用户查询（原逻辑保留；仅在入口加熔断检查、对 LLM 调用加重试）
-        """
-        import time
-        start_time = time.time()
-
-        # ---------- 仅新增：熔断检查 ----------
-        if self.circuit_breaker:
-            try:
-                self.circuit_breaker.raise_if_open()
-            except CircuitOpenError:
-                self.console.print(
-                    "\n[bold yellow]⚠ 服务暂时不可用，请稍后再试。[/bold yellow]\n",
-                    style="dim"
-                )
-                return
-
-        rc = RESILIENCE_CONFIG
-        max_retries = rc.get("max_retries", 3)
-
-        with self.console.status("思考中...", spinner="dots"):
-            from agentscope.message import Msg
-
-            # 1. 获取长期记忆摘要与上下文（原逻辑不变）
-            long_term_summary = await self._get_long_term_summary(user_input)
-            recent_context = self.memory_manager.short_term.get_recent_context(n_turns=5)
-            context_messages = []
-            if long_term_summary:
-                context_messages.append(Msg(name="system", content=long_term_summary, role="system"))
-            for msg in recent_context:
-                context_messages.append(Msg(name=msg["role"], content=msg["content"], role=msg["role"]))
-            context_messages.append(Msg(name="user", content=user_input, role="user"))
-
-            # 2. 意图识别（仅此调用加重试，原逻辑不变）
-            intention_result = None
-            try:
-                # lambda 是协程工厂：先不执行 reply()，由重试器在每次尝试时
-                # 调用它并创建一个新的协程，避免复用已经 await 过的协程对象。
-                intention_result = await retry_with_backoff(
-                    lambda: self.intention_agent.reply(context_messages),
-                    max_retries=max_retries,
-                    base_delay_sec=rc.get("retry_base_delay_sec", 1.0),
-                    max_delay_sec=rc.get("retry_max_delay_sec", 30.0),
-                )
-            except CircuitOpenError:
-                raise
-            except Exception as e:
-                if self.circuit_breaker:
-                    self.circuit_breaker.record_failure()
-                raise
-
-            # 3. 解析意图识别结果（原逻辑不变：解析失败则友好提示并 return）
-            try:
-                intention_data = json.loads(intention_result.content)
-            except json.JSONDecodeError:
-                self.console.print("❌ 无法理解您的需求，请重新描述", style="bold red")
-                return
-
-        # 4. 添加用户输入到短期记忆（原逻辑不变）
-        self.memory_manager.add_message("user", user_input)
-
-        # 5. 调度智能体
-        orchestration_result = None
         try:
-            # 同样传入协程工厂，使每次调度重试都会创建新的 reply() 协程。
-            orchestration_result = await retry_with_backoff(
-                lambda: self.orchestrator.reply(intention_result),
-                max_retries=max_retries,
-                base_delay_sec=rc.get("retry_base_delay_sec", 1.0),
-                max_delay_sec=rc.get("retry_max_delay_sec", 30.0),
-            )
+            with self.console.status("思考中...", spinner="dots"):
+                turn_result = await self.turn_executor.execute_turn(user_input)
         except CircuitOpenError:
-            raise
-        except Exception as e:
-            if self.circuit_breaker:
-                self.circuit_breaker.record_failure()
-            raise
+            self.console.print(
+                "\n[bold yellow]⚠ 服务暂时不可用，请稍后再试。[/bold yellow]\n",
+                style="dim",
+            )
+            return None
+        except InvalidIntentionResultError:
+            self.console.print(
+                "❌ 无法理解您的需求，请重新描述",
+                style="bold red",
+            )
+            return None
 
-        # 6. 解析执行结果（原逻辑不变）
-        try:
-            result_data = json.loads(orchestration_result.content)
-        except json.JSONDecodeError:
-            result_data = {"error": "解析结果失败"}
-
-        # 以完整用户请求为统计粒度：只有意图识别和调度都完成后才重置连续失败计数。
-        if self.circuit_breaker:
-            self.circuit_breaker.record_success()
-
-        # 7. 显示调用的智能体与最终结果（原逻辑不变）
+        # CLI 只负责把业务层返回的结构化结果展示给用户。
+        result_data = turn_result["orchestration"]
         self._display_agents_called(result_data)
         self.console.print()
         self._display_results(result_data)
-        self.memory_manager.add_message("assistant", json.dumps(result_data, ensure_ascii=False))
+        return turn_result
 
     def _display_agents_called(self, result_data: dict):
         """显示调用的智能体列表"""
@@ -330,79 +270,6 @@ class AligoCLI:
                 self.console.print("✓ 已处理您的请求。", style="green")
 
         self.console.print()
-
-    async def _get_long_term_summary(self, user_input: str = "") -> str:
-        """
-        生成长期记忆摘要，用于传递给IntentionAgent
-        使用LLM总结历史聊天记录 + 结构化偏好
-
-        Args:
-            user_input: 用户输入，用于筛选相关历史行程
-
-        Returns:
-            格式化的长期记忆摘要
-        """
-        summary_parts = []
-
-        # 1. 用户偏好信息（始终加载）
-        prefs = self.memory_manager.long_term.get_preference()
-        if prefs:
-            pref_lines = ["【用户背景信息】（来自长期记忆，可用于推断缺失信息）"]
-
-            # 遍历所有偏好，全部加载
-            for pref_key, pref_value in prefs.items():
-                if pref_value:  # 只添加有值的偏好
-                    # 如果是列表，用逗号连接
-                    if isinstance(pref_value, list):
-                        pref_lines.append(f"• {pref_key}: {', '.join(pref_value)}")
-                    else:
-                        pref_lines.append(f"• {pref_key}: {pref_value}")
-
-            # 只有在有具体偏好内容时才添加
-            if len(pref_lines) > 1:
-                summary_parts.extend(pref_lines)
-
-        # 2. 使用LLM总结历史聊天记录
-        chat_summary = await self.memory_manager.get_long_term_summary_async(max_messages=50)
-        if chat_summary:
-            summary_parts.append("\n【历史会话总结】")
-            summary_parts.append(chat_summary)
-
-        # 3. 智能筛选相关历史行程
-        all_trips = self.memory_manager.long_term.get_trip_history(limit=None)
-        if all_trips:
-            # 筛选相关的行程（地点匹配）
-            relevant_trips = []
-            other_trips = []
-
-            for trip in all_trips:
-                origin = trip.get("origin", "") or ""
-                destination = trip.get("destination", "") or ""
-
-                # 如果用户输入提到了这个行程的地点，标记为相关
-                if (origin and origin in user_input) or (destination and destination in user_input):
-                    relevant_trips.append(trip)
-                else:
-                    other_trips.append(trip)
-
-            # 优先显示相关的，再补充最近的
-            trips_to_show = relevant_trips[:2] + other_trips[:1]  # 2条相关 + 1条最近
-
-            if trips_to_show:
-                summary_parts.append("\n【历史行程】")
-                for i, trip in enumerate(trips_to_show[:3], 1):
-                    origin = trip.get("origin", "未知")
-                    destination = trip.get("destination", "未知")
-                    start_date = trip.get("start_date", "")
-                    purpose = trip.get("purpose", "")
-
-                    # 标记相关性
-                    relevance_mark = "✦ " if trip in relevant_trips else ""
-                    summary_parts.append(
-                        f"{i}. {relevance_mark}{origin} → {destination} ({start_date}) - {purpose}"
-                    )
-
-        return "\n".join(summary_parts) if summary_parts else ""
 
     def _generate_human_response(
         self,
