@@ -95,6 +95,41 @@ def make_agent(model):
 
 
 class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_previous_trip_reuse_adds_memory_query(self):
+        model_output = json.dumps({
+            "reasoning": "用户希望按上次行程继续规划",
+            "intents": [
+                {"type": "itinerary_planning", "confidence": 0.95},
+            ],
+            "key_entities": {
+                "destination": "北京",
+                "start_date": "2026-08-20",
+            },
+            "rewritten_query": "2026年8月20日从苏州去北京3天",
+            "agent_schedule": [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+        }, ensure_ascii=False)
+        agent = make_agent(FakeModel(content=model_output))
+
+        response = await agent.reply(
+            Msg(
+                name="User",
+                content=(
+                    "2026年8月20日再去北京，出发地和行程天数"
+                    "都按上次一样，帮我规划行程"
+                ),
+                role="user",
+            )
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(
+            [item["agent_name"] for item in result["agent_schedule"]],
+            ["memory_query", "event_collection", "itinerary_planning"],
+        )
+
     async def test_history_preference_trip_adds_collection_and_removes_write_agent(self):
         model_output = json.dumps({
             "reasoning": "用户希望引用历史酒店偏好规划行程",
