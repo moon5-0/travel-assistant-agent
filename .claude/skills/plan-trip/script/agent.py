@@ -121,51 +121,28 @@ class ItineraryPlanningAgent(AgentBase):
 【任务说明与指南】
 {skill_instruction}
 
-请直接输出 JSON 格式的行程规划。
+请直接输出 JSON 格式的行程规划，不要输出 Markdown、注释或额外解释。
+JSON 字符串内部出现双引号时必须正确转义。
 """
 
         try:
-            # 调用模型 - 使用消息列表格式
-            response = await self.model([
-                {"role": "user", "content": prompt}
-            ])
+            # JSON mode 先降低格式错误概率；如果内容仍损坏，下面只修复一次。
+            response = await self.model(
+                [{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
 
             # 获取响应文本
             text = await extract_json_from_async_response(response)
 
-            # 解析结果
-            result = None
-            
-            # 策略1: 尝试标准解析 (依赖 robust_json_parse 的清洗能力)
             try:
-                result = robust_json_parse(text, fallback=None)
-            except Exception:
-                # 策略2: 使用 raw_decode 解析前缀 JSON (最强力，能忽略尾随文本如 Thinking)
-                try:
-                    # 再次清理 Markdown (以防 extract_json_from_async_response 漏网)
-                    clean_text = text
-                    if "```" in clean_text:
-                        import re
-                        clean_text = re.sub(r'```json\s*', '', clean_text, flags=re.IGNORECASE)
-                        clean_text = re.sub(r'```', '', clean_text)
-                    
-                    clean_text = clean_text.strip()
-                    start_idx = clean_text.find('{')
-                    
-                    if start_idx != -1:
-                        # 从第一个 { 开始尝试解析
-                        clean_text = clean_text[start_idx:]
-                        decoder = json.JSONDecoder()
-                        obj, _ = decoder.raw_decode(clean_text)
-                        result = obj
-                    else:
-                        raise ValueError("No JSON object start '{' found")
-                except Exception as decode_err:
-                    # 如果策略2也失败，抛出包含详细信息的异常
-                    raise ValueError(f"All JSON parsing attempts failed. Strategy 2 error: {decode_err}")
-
-            if result is None:
-                raise ValueError("Parsed result is None")
+                result = self._parse_and_validate(text)
+            except ValueError as first_error:
+                logger.warning(
+                    "Itinerary output invalid, attempting one repair: %s",
+                    first_error,
+                )
+                result = await self._repair_output(text, first_error)
 
         except Exception as e:
             logger.error(f"Itinerary planning failed: {e}")
@@ -194,3 +171,50 @@ class ItineraryPlanningAgent(AgentBase):
 
         # 返回JSON字符串格式
         return Msg(name=self.name, content=json.dumps(result, ensure_ascii=False), role="assistant")
+
+    @staticmethod
+    def _parse_and_validate(text: str) -> Dict[str, Any]:
+        """容错解析后校验下游展示和记忆更新依赖的最小结构。"""
+        result = robust_json_parse(text, fallback=None)
+        itinerary = result.get("itinerary")
+        if not isinstance(itinerary, dict):
+            raise ValueError("itinerary must be an object")
+        if not isinstance(itinerary.get("daily_plans"), list):
+            raise ValueError("itinerary.daily_plans must be a list")
+        if not isinstance(result.get("planning_complete"), bool):
+            raise ValueError("planning_complete must be a boolean")
+        return result
+
+    async def _repair_output(
+        self,
+        invalid_text: str,
+        validation_error: Exception,
+    ) -> Dict[str, Any]:
+        """只修复一次 JSON 格式或最小字段结构，不重新规划行程。"""
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是JSON格式修复器。只修复格式和字段结构，保留原行程内容，"
+                    "不要新增景点、日期或其他事实。只输出一个合法JSON对象。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "根对象必须包含 itinerary 和 planning_complete。"
+                    "itinerary必须是对象，daily_plans必须是数组，"
+                    "planning_complete必须是布尔值。"
+                    "不要输出Markdown、注释或解释。\n"
+                    f"校验错误：{validation_error}\n"
+                    "待修复内容：\n"
+                    f"{invalid_text[:12000]}"
+                ),
+            },
+        ]
+        response = await self.model(
+            repair_messages,
+            response_format={"type": "json_object"},
+        )
+        repaired_text = await extract_json_from_async_response(response)
+        return self._parse_and_validate(repaired_text)
