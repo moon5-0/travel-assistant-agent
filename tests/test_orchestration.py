@@ -282,6 +282,11 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 "start_date": None,
                 "end_date": None,
                 "duration_days": None,
+                "missing_info": [
+                    "origin",
+                    "start_date",
+                    "duration_days",
+                ],
             },
         )
         plan_agent = FakeAgent(
@@ -318,6 +323,9 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
             "start_date": "2026-07-24",
             "end_date": "2026-07-26",
             "duration_days": 3,
+            # EventCollectionAgent 只看本轮输入，因此仍会认为目的地缺失。
+            # 调度器合并上一轮“北京”后必须重新计算，不能保留这个旧状态。
+            "missing_info": ["destination"],
         }
 
         second_response = await orchestrator.reply(
@@ -345,6 +353,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
             "2026-07-24",
         )
         self.assertEqual(merged_data["duration_days"], 3)
+        self.assertEqual(merged_data["missing_info"], [])
 
     async def test_multiple_turns_keep_asking_until_trip_is_complete(self):
         event_agent = FakeAgent(

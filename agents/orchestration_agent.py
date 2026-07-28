@@ -251,6 +251,12 @@ class OrchestrationAgent(AgentBase):
                 if key not in trip_fields:
                     merged_data[key] = value
 
+            # missing_info 是基于“本轮输入”得到的派生状态。合并上一轮草稿后，
+            # 必须基于完整数据重新计算，避免出现 destination 已有值却仍提示缺失。
+            merged_data["missing_info"] = self._calculate_missing_trip_fields(
+                merged_data
+            )
+
             # 后面的行程规划Agent将从results中获得合并后的结果。
             result["data"] = merged_data
 
@@ -289,15 +295,22 @@ class OrchestrationAgent(AgentBase):
                 "duration_days",
             ]
 
+        return self._calculate_missing_trip_fields(event_data)
+
+    @staticmethod
+    def _calculate_missing_trip_fields(
+        trip_data: Dict[str, Any],
+    ) -> List[str]:
+        """基于一份合并后的行程数据，统一计算规划所缺的必填字段。"""
         missing_fields = []
 
         # 行程规划需要明确的出发地、目的地和出发日期。
         for field in ("origin", "destination", "start_date"):
-            if not event_data.get(field):
+            if not trip_data.get(field):
                 missing_fields.append(field)
 
         # duration_days和end_date有一个即可表达行程长度。
-        if not event_data.get("duration_days") and not event_data.get("end_date"):
+        if not trip_data.get("duration_days") and not trip_data.get("end_date"):
             missing_fields.append("duration_days")
 
         return missing_fields
