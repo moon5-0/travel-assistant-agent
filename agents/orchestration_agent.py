@@ -19,8 +19,23 @@ from typing import Optional, Union, List, Dict, Any
 import json
 import logging
 import asyncio
+import re
 
 logger = logging.getLogger(__name__)
+
+
+DATE_REFERENCE_PATTERN = re.compile(
+    r"(?:"
+    r"\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*[日号]?"
+    r"|\d{1,2}\s*[-/.]\s*\d{1,2}"
+    r"|今天|今晚|明天|明早|后天|大后天"
+    r"|本周|这周|下周|下下周|周末"
+    r"|星期[一二三四五六日天]|周[一二三四五六日天]"
+    r"|本月|这个月|下个月|月初|月中|月底"
+    r"|元旦|春节|清明|劳动节|端午|中秋|国庆"
+    r")"
+)
 
 
 class OrchestrationAgent(AgentBase):
@@ -90,9 +105,21 @@ class OrchestrationAgent(AgentBase):
 
         # 解析输入
         if isinstance(x, list):
-            intention_output = x[-1].content if x else "{}"
+            intention_message = x[-1] if x else None
         else:
-            intention_output = x.content
+            intention_message = x
+
+        intention_output = (
+            intention_message.content if intention_message else "{}"
+        )
+        runtime_metadata = (
+            getattr(intention_message, "metadata", {}) or {}
+            if intention_message
+            else {}
+        )
+        original_user_input = str(
+            runtime_metadata.get("original_user_input", "") or ""
+        )
 
         # 解析意图识别结果
         try:
@@ -147,7 +174,10 @@ class OrchestrationAgent(AgentBase):
                     )
 
                     if next_batch_has_itinerary:
-                        self._merge_pending_trip_data(results)
+                        self._merge_pending_trip_data(
+                            results,
+                            original_user_input=original_user_input,
+                        )
 
                     missing_fields = self._get_missing_trip_fields(results)
 
@@ -214,6 +244,7 @@ class OrchestrationAgent(AgentBase):
     def _merge_pending_trip_data(
         self,
         results: List[Dict[str, Any]],
+        original_user_input: str = "",
     ) -> None:
         """将本轮事项信息与上一轮待补全信息合并。"""
         trip_fields = (
@@ -237,6 +268,18 @@ class OrchestrationAgent(AgentBase):
             current_data = result.get("data", {})
             if not isinstance(current_data, dict):
                 continue
+
+            # 日期允许从“明天、8月10日”等明确表达换算，但不能在用户和待补全
+            # 草稿都没有日期时由模型默认成今天或明天。
+            pending_has_start_date = bool(
+                self._pending_trip_data.get("start_date")
+            )
+            if (
+                not pending_has_start_date
+                and not self._has_date_reference(original_user_input)
+            ):
+                current_data["start_date"] = None
+                current_data["end_date"] = None
 
             # 先保留上一轮的信息，再使用本轮非空字段覆盖。
             merged_data = dict(self._pending_trip_data)
@@ -296,6 +339,11 @@ class OrchestrationAgent(AgentBase):
             ]
 
         return self._calculate_missing_trip_fields(event_data)
+
+    @staticmethod
+    def _has_date_reference(user_input: str) -> bool:
+        """判断原始用户输入是否包含可用于换算日期的明确表达。"""
+        return bool(DATE_REFERENCE_PATTERN.search(user_input or ""))
 
     @staticmethod
     def _calculate_missing_trip_fields(

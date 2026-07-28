@@ -57,7 +57,7 @@ class EventCollectionAgent(AgentBase):
         # 构建用户背景信息
         background_info = ""
         if user_preferences:
-            bg_parts = ["【用户背景信息】（可用于推断缺失信息）"]
+            bg_parts = ["【用户背景信息】（只可按下方规则补全，不可用于猜测日期）"]
             if user_preferences.get("home_location"):
                 bg_parts.append(f"• 家庭住址: {user_preferences['home_location']}")
             if user_preferences.get("hotel_brands"):
@@ -95,6 +95,8 @@ class EventCollectionAgent(AgentBase):
 - 当前时间是{current_date}
 - 用户说"2月27日"或"2.27"等相对时间，请根据当前时间推断完整日期（年月日）
 - 用户说"明天"、"后天"、"下周"等相对时间，请根据当前时间计算具体日期
+- 如果用户完全没有提到日期或相对时间，start_date和end_date必须设为null
+- 不得因为“尽快出行”或当前日期而默认填入今天、明天或其他日期
 - 所有日期必须输出完整的YYYY-MM-DD格式
 
 【特殊处理】
