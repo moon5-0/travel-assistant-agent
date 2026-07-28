@@ -104,6 +104,11 @@ class EventCollectionAgent(AgentBase):
 - 对于"一日游"：duration_days设为1
 - 如果用户没说出发地，但有家庭住址信息，可推断出发地为家庭住址
 
+【实体可信度规则】（重要）
+- 只提取用户明确说出的行程目的，不要根据“规划行程”等表达猜测为旅游或出差
+- 用户没有说明行程目的时，trip_purpose必须设为null
+- trip_purpose是可选字段，值为null时不需要加入missing_info
+
 【输出格式】(严格JSON)
 {{
     "origin": "北京",
@@ -112,9 +117,9 @@ class EventCollectionAgent(AgentBase):
     "end_date": "2026-02-27",
     "duration_days": 1,
     "return_location": "北京",
-    "trip_purpose": "旅游",
+    "trip_purpose": null,
     "missing_info": [],
-    "extracted_count": 7,
+    "extracted_count": 6,
     "summary": "北京一日游，2月27日"
 }}
 
