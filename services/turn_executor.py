@@ -49,6 +49,13 @@ class AgentTurnExecutor:
                 "IntentionAgent 返回结果不是有效 JSON"
             ) from exc
 
+        # 原始输入属于本轮运行时上下文，不写进 LLM 的五字段输出合同；
+        # 调度器用它判断子 Agent 提取的日期是否真的来自用户表达。
+        intention_result.metadata = {
+            **(getattr(intention_result, "metadata", {}) or {}),
+            "original_user_input": user_input,
+        }
+
         # 意图识别完成后再记录当前输入，供子 Agent 读取最新的会话上下文。
         self.memory_manager.add_message("user", user_input)
 

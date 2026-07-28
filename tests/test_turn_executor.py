@@ -121,6 +121,10 @@ class TestAgentTurnExecutor(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hotel_brands", context_messages[0].content)
         self.assertIs(orchestrator.received, intention_agent.response)
         self.assertEqual(
+            orchestrator.received.metadata["original_user_input"],
+            "帮我规划去北京",
+        )
+        self.assertEqual(
             json.loads(orchestrator.received.content),
             intention_data,
         )
