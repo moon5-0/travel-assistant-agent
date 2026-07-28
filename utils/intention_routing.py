@@ -11,7 +11,8 @@ HISTORY_REFERENCE_MARKERS = (
     "过去",
     "历史",
     "上次",
-    "保存了",
+    "保存的",
+    "保存了哪些",
     "记得我",
     "去过",
 )
@@ -82,6 +83,7 @@ def _ensure_agent(
 def normalize_intention_routing(
     result: dict[str, Any],
     user_query: str,
+    pending_trip: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """对已通过结构校验的模型调度表应用核心业务不变量。"""
     normalized = dict(result)
@@ -96,6 +98,23 @@ def normalize_intention_routing(
         PREFERENCE_MUTATION_MARKERS,
     )
     is_external_query = _contains_any(query, EXTERNAL_INFORMATION_MARKERS)
+
+    # 用户明确引用“上次、之前、历史”等内容时，执行阶段必须正式查询记忆；
+    # IntentionAgent 看到的历史摘要只用于理解和路由，不能替代结构化查询。
+    if is_history_reference:
+        _ensure_agent(
+            schedule,
+            "memory_query",
+            1,
+            "用户明确引用了历史信息",
+        )
+        if not any(item.get("type") == "memory_query" for item in intents):
+            intents.append({
+                "type": "memory_query",
+                "confidence": 1.0,
+                "description": "查询用户明确引用的历史信息",
+                "reason": "执行阶段需要读取结构化历史记录",
+            })
 
     # 查询或引用已保存偏好属于读操作，不应调用会写长期记忆的 PreferenceAgent。
     if (
@@ -114,13 +133,6 @@ def normalize_intention_routing(
                 for item in schedule
                 if item.get("agent_name") != "information_query"
             ]
-        _ensure_agent(
-            schedule,
-            "memory_query",
-            1,
-            "用户正在查询或引用已保存的历史偏好",
-        )
-
         # 用户意图和实际调度要保持一致，避免出现“意图是联网查询，
         # 实际却执行记忆查询”这类难以追踪的矛盾结果。
         blocked_intents = {"preference"}
@@ -131,12 +143,29 @@ def normalize_intention_routing(
             for item in intents
             if item.get("type") not in blocked_intents
         ]
-        if not any(item.get("type") == "memory_query" for item in intents):
+
+    # 当前会话已有待补全行程时，本轮事项收集是上一轮规划的继续。
+    # 即使模型只返回 event_collection，也要恢复规划批次，让协调器执行
+    # 合并和缺失字段检查；信息仍不完整时，规划 Agent 会被协调器拦截。
+    if pending_trip and any(
+        item.get("agent_name") == "event_collection"
+        for item in schedule
+    ):
+        _ensure_agent(
+            schedule,
+            "itinerary_planning",
+            2,
+            "继续处理当前会话中尚未补全的行程",
+        )
+        if not any(
+            item.get("type") == "itinerary_planning"
+            for item in intents
+        ):
             intents.append({
-                "type": "memory_query",
+                "type": "itinerary_planning",
                 "confidence": 1.0,
-                "description": "查询或引用用户已保存的历史偏好",
-                "reason": "用户明确引用了自己的历史偏好",
+                "description": "继续补全并规划当前行程",
+                "reason": "当前会话存在尚未完成的行程草稿",
             })
 
     # 行程规划必须先经过事项收集，不能直接把意图实体交给规划 Agent。

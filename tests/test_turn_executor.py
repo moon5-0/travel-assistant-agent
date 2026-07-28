@@ -78,6 +78,47 @@ class FakeCircuitBreaker:
 
 
 class TestAgentTurnExecutor(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_trip_continuation_restores_itinerary_schedule(self):
+        intention_data = {
+            "intents": [{"type": "event_collection", "confidence": 0.95}],
+            "key_entities": {"origin": "苏州"},
+            "rewritten_query": "从苏州出发",
+            "agent_schedule": [
+                {"agent_name": "event_collection", "priority": 1},
+            ],
+        }
+
+        class PendingTripOrchestrator(FakeAgent):
+            def get_pending_trip(self):
+                return {"destination": "北京"}
+
+        intention_agent = FakeAgent(json.dumps(intention_data))
+        orchestrator = PendingTripOrchestrator(json.dumps({
+            "status": "needs_clarification",
+            "missing_fields": ["start_date", "duration_days"],
+            "results": [],
+        }))
+        executor = AgentTurnExecutor(
+            intention_agent=intention_agent,
+            orchestrator=orchestrator,
+            memory_manager=FakeMemoryManager(),
+            resilience_config={"max_retries": 0},
+        )
+
+        result = await executor.execute_turn("从苏州出发")
+
+        self.assertEqual(
+            [
+                item["agent_name"]
+                for item in result["intention"]["agent_schedule"]
+            ],
+            ["event_collection", "itinerary_planning"],
+        )
+        self.assertEqual(
+            json.loads(orchestrator.received.content)["agent_schedule"],
+            result["intention"]["agent_schedule"],
+        )
+
     async def test_execute_turn_returns_structured_result_and_updates_chat(self):
         intention_data = {
             "intents": ["规划行程"],

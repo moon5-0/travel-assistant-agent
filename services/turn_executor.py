@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from agentscope.message import Msg
 
 from utils.circuit_breaker import CircuitOpenError
+from utils.intention_routing import normalize_intention_routing
 from utils.llm_resilience import retry_with_backoff
 
 
@@ -48,6 +49,22 @@ class AgentTurnExecutor:
             raise InvalidIntentionResultError(
                 "IntentionAgent 返回结果不是有效 JSON"
             ) from exc
+
+        # IntentionAgent 只知道对话文本，不直接持有协调器中的待补全状态。
+        # 在业务入口补充这层状态感知，避免用户续接行程时只执行事项收集，
+        # 却跳过后续的合并、缺失字段检查和继续规划流程。
+        get_pending_trip = getattr(self.orchestrator, "get_pending_trip", None)
+        pending_trip = get_pending_trip() if callable(get_pending_trip) else {}
+        if pending_trip:
+            intention_data = normalize_intention_routing(
+                intention_data,
+                user_input,
+                pending_trip=pending_trip,
+            )
+            intention_result.content = json.dumps(
+                intention_data,
+                ensure_ascii=False,
+            )
 
         # 原始输入属于本轮运行时上下文，不写进 LLM 的五字段输出合同；
         # 调度器用它判断子 Agent 提取的日期是否真的来自用户表达。
