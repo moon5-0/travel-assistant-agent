@@ -154,6 +154,55 @@ def intention_message(
 
 
 class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
+    async def test_unmentioned_trip_purpose_is_not_used_or_persisted(self):
+        memory = FakeMemoryManager()
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+                # 模拟模型在用户没有说明目的时擅自补成“旅游”。
+                "trip_purpose": "旅游",
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": [{"day": 1}]}},
+        )
+        orchestrator = OrchestrationAgent(
+            agent_registry={
+                "event_collection": event_agent,
+                "itinerary_planning": plan_agent,
+            },
+            memory_manager=memory,
+        )
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        response = await orchestrator.reply(
+            intention_message(
+                schedule,
+                original_user_input="8月10日从苏州去北京3天",
+            )
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "completed")
+        previous_results = plan_agent.received_input["previous_results"]
+        event_data = next(
+            item["result"]["data"]
+            for item in previous_results
+            if item["agent_name"] == "event_collection"
+        )
+        self.assertIsNone(event_data.get("trip_purpose"))
+        self.assertIsNone(memory.long_term.saved_trips[0]["purpose"])
+
     async def test_unmentioned_start_date_is_rejected_before_planning(self):
         event_agent = FakeAgent(
             "event_collection",
@@ -669,7 +718,12 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
             {"agent_name": "event_collection", "priority": 1},
             {"agent_name": "itinerary_planning", "priority": 2},
         ]
-        response = await orchestrator.reply(intention_message(schedule))
+        response = await orchestrator.reply(
+            intention_message(
+                schedule,
+                original_user_input="2026年7月14日从苏州前往杭州出差",
+            )
+        )
         result = json.loads(response.content)
 
         self.assertEqual(result["status"], "completed")

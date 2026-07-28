@@ -37,6 +37,12 @@ DATE_REFERENCE_PATTERN = re.compile(
     r")"
 )
 
+TRIP_PURPOSE_REFERENCE_PATTERN = re.compile(
+    r"(?:出差|商务|因工作|工作需要|工作出行|旅游|旅行|度假|休假|探亲|访友|"
+    r"会议|开会|培训|团建|"
+    r"参展|看展|展会|拜访客户|客户拜访|考察|就医|求学|留学|考试|婚礼|赛事)"
+)
+
 
 class OrchestrationAgent(AgentBase):
     """协调器智能体 - 调度和协调多个子智能体"""
@@ -281,6 +287,11 @@ class OrchestrationAgent(AgentBase):
                 current_data["start_date"] = None
                 current_data["end_date"] = None
 
+            # trip_purpose 是可选信息。模型不能因为“规划行程”就默认成旅游；
+            # 本轮没有明确目的时丢弃本轮推断，上一轮已经确认的值仍由合并逻辑保留。
+            if not self._has_trip_purpose_reference(original_user_input):
+                current_data["trip_purpose"] = None
+
             # 先保留上一轮的信息，再使用本轮非空字段覆盖。
             merged_data = dict(self._pending_trip_data)
 
@@ -344,6 +355,11 @@ class OrchestrationAgent(AgentBase):
     def _has_date_reference(user_input: str) -> bool:
         """判断原始用户输入是否包含可用于换算日期的明确表达。"""
         return bool(DATE_REFERENCE_PATTERN.search(user_input or ""))
+
+    @staticmethod
+    def _has_trip_purpose_reference(user_input: str) -> bool:
+        """判断用户是否明确说明了出行目的。"""
+        return bool(TRIP_PURPOSE_REFERENCE_PATTERN.search(user_input or ""))
 
     @staticmethod
     def _calculate_missing_trip_fields(
@@ -688,7 +704,7 @@ class OrchestrationAgent(AgentBase):
                     start_date = event_data.get("start_date")
                     end_date = event_data.get("end_date")
                     duration_days = event_data.get("duration_days")
-                    purpose = event_data.get("trip_purpose", "旅游")
+                    purpose = event_data.get("trip_purpose")
 
                     # 保存到长期记忆（只要有目的地就保存）
                     if destination:
