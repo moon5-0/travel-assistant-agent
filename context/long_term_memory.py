@@ -12,6 +12,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# 这些偏好在业务上允许多个值，持久化时必须始终保持列表结构。
+COLLECTION_PREFERENCE_TYPES = frozenset({"hotel_brands", "airlines"})
+
+
 class LongTermMemory:
     """
     长期记忆：持久化用户信息
@@ -106,6 +110,16 @@ class LongTermMemory:
             if fixed_prefs != data["preferences"]:
                 data["preferences"] = fixed_prefs
 
+        # 4. 修复旧数据中集合型偏好被保存成字符串的问题。
+        for pref in data.get("preferences", []):
+            if not isinstance(pref, dict):
+                continue
+            pref_type = pref.get("type")
+            pref["value"] = self._normalize_preference_value(
+                pref_type,
+                pref.get("value"),
+            )
+
         # 保存迁移后的数据
         self.data = data
         self._save()
@@ -138,30 +152,56 @@ class LongTermMemory:
         except Exception as e:
             logger.error(f"Failed to save long-term memory: {e}")
 
-    def save_preference(self, pref_type: str, value: Any):
+    @staticmethod
+    def _normalize_preference_value(pref_type: str, value: Any) -> Any:
+        """按偏好字段合同统一数据形状，并对集合值去重。"""
+        if pref_type not in COLLECTION_PREFERENCE_TYPES:
+            return value
+
+        values = value if isinstance(value, list) else [value]
+        normalized = []
+        for item in values:
+            if item in (None, "") or item in normalized:
+                continue
+            normalized.append(item)
+        return normalized
+
+    def save_preference(self, pref_type: str, value: Any) -> bool:
         """
-        保存用户偏好（列表格式）
+        按字段合同幂等保存用户偏好。
 
         Args:
             pref_type: 偏好类型
             value: 偏好值
+
+        Returns:
+            True 表示数据发生变化；False 表示与已有偏好相同。
         """
+        normalized_value = self._normalize_preference_value(pref_type, value)
+
         # 查找是否已存在该类型的偏好
         preferences = self.data["preferences"]
         found = False
 
         for pref in preferences:
             if pref.get("type") == pref_type:
-                pref["value"] = value
+                if pref.get("value") == normalized_value:
+                    logger.info(
+                        "Skipped unchanged preference: %s",
+                        pref_type,
+                    )
+                    return False
+                pref["value"] = normalized_value
                 found = True
                 break
 
         # 如果不存在，添加新的偏好
         if not found:
-            preferences.append({"type": pref_type, "value": value})
+            preferences.append({"type": pref_type, "value": normalized_value})
 
         self._save()
-        logger.info(f"Saved preference: {pref_type} = {value}")
+        logger.info(f"Saved preference: {pref_type} = {normalized_value}")
+        return True
 
     def get_preference(self, pref_type: str = None) -> Any:
         """

@@ -126,6 +126,27 @@ class TestMemoryManager(TemporaryMemoryTestCase):
             {"home_location": "上海", "hotel_brands": ["如家", "汉庭"]},
         )
 
+    def test_collection_preference_keeps_list_shape_and_skips_duplicate(self):
+        memory = self.create_manager().long_term
+
+        first_changed = memory.save_preference("hotel_brands", "汉庭")
+        second_changed = memory.save_preference("hotel_brands", "汉庭")
+        third_changed = memory.save_preference(
+            "hotel_brands",
+            ["汉庭", "汉庭", "如家"],
+        )
+
+        self.assertTrue(first_changed)
+        self.assertFalse(second_changed)
+        self.assertTrue(third_changed)
+        self.assertEqual(
+            memory.get_preference("hotel_brands"),
+            ["汉庭", "如家"],
+        )
+
+        memory.save_preference("home_location", "苏州")
+        self.assertEqual(memory.get_preference("home_location"), "苏州")
+
     def test_trip_statistics_and_clear_history_preserve_preferences(self):
         manager = self.create_manager()
         memory = manager.long_term
