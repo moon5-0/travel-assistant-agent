@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CASES_PATH = Path(__file__).with_name("rag_cases.json")
 
 

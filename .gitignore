@@ -62,9 +62,10 @@ tmp/
 # Logs
 *.log
 
-# Generated Agent evaluation reports (reproducible local artifacts)
-evaluation/results/agent-baseline-*.json
-evaluation/results/system-baseline-*.json
+# Generated evaluation reports (reproducible local artifacts)
+evaluation/system/results/agent-baseline-*.json
+evaluation/system/results/system-baseline-*.json
+evaluation/itinerary_quality/results/itinerary-quality-*.json
 
 # OS
 .DS_Store

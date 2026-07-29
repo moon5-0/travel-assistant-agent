@@ -2,7 +2,7 @@
 
 import unittest
 
-from evaluation.system_trace_collector import SystemTraceCollector
+from evaluation.system.system_trace_collector import SystemTraceCollector
 
 
 class FakeLongTermMemory:

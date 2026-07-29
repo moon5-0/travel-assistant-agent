@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 import unittest
 
-from evaluation.system_eval_runner import SystemEvaluationRunner
+from evaluation.system.system_eval_runner import SystemEvaluationRunner
 
 
 def expected():

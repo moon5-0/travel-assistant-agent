@@ -1,0 +1,546 @@
+{
+  "version": "0.1.0-draft",
+  "description": "ItineraryPlanningAgent 第一批行程质量评估场景。固定结构化输入，独立评价规划结果，不评价上游路由与记忆读取。",
+  "global_rules": {
+    "unsupported_confirmation_patterns": [
+      "已为您预订",
+      "已预订成功",
+      "余票充足",
+      "价格已确认"
+    ],
+    "minimum_daily_plan_fields": [
+      "day",
+      "date",
+      "city",
+      "activities"
+    ]
+  },
+  "cases": [
+    {
+      "id": "standard_three_day_business_trip",
+      "name": "标准三天商务出差",
+      "input": {
+        "user_query": "2026年8月10日从苏州去北京出差3天，拜访客户并安排适量的空闲活动。",
+        "trip_info": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-10",
+          "end_date": "2026-08-12",
+          "duration_days": 3,
+          "return_location": "苏州",
+          "trip_purpose": "客户拜访"
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-10",
+          "end_date": "2026-08-12",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "business_first",
+            "description": "行程应以客户拜访和商务活动为主，空闲活动不能挤占核心差旅安排。",
+            "any_of": ["客户", "拜访", "商务"]
+          },
+          {
+            "id": "return_plan",
+            "description": "最后一天应包含返回苏州的安排。",
+            "any_of": ["返回苏州", "返程", "苏州"]
+          }
+        ],
+        "forbidden_content": [],
+        "judge_focus": [
+          "三天安排是否完整",
+          "商务活动与空闲活动比例是否合理",
+          "抵达和返程是否留出交通缓冲"
+        ]
+      }
+    },
+    {
+      "id": "fixed_customer_meeting",
+      "name": "含固定客户会议",
+      "input": {
+        "user_query": "2026年8月17日从上海去深圳出差3天。8月18日10:00到12:00必须在南山区科技园参加客户会议，请围绕会议安排行程。",
+        "trip_info": {
+          "origin": "上海",
+          "destination": "深圳",
+          "start_date": "2026-08-17",
+          "end_date": "2026-08-19",
+          "duration_days": 3,
+          "return_location": "上海",
+          "trip_purpose": "客户会议",
+          "fixed_events": [
+            {
+              "date": "2026-08-18",
+              "time": "10:00-12:00",
+              "location": "南山区科技园",
+              "title": "客户会议"
+            }
+          ]
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "destination": "深圳",
+          "start_date": "2026-08-17",
+          "end_date": "2026-08-19",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "fixed_meeting",
+            "description": "必须准确保留8月18日10:00至12:00的南山区科技园客户会议。",
+            "all_of": ["2026-08-18", "10:00", "12:00", "南山区科技园", "客户会议"],
+            "fatal": true
+          }
+        ],
+        "forbidden_content": [],
+        "judge_focus": [
+          "会议时间是否被其他活动占用",
+          "会议前后是否有合理通勤和缓冲",
+          "住宿或活动地点是否方便前往南山区科技园"
+        ]
+      }
+    },
+    {
+      "id": "same_day_round_trip",
+      "name": "当天往返的紧凑行程",
+      "input": {
+        "user_query": "2026年8月21日从杭州坐高铁去上海当天往返，14:00到16:00在浦东参加会议，不要安排旅游景点。",
+        "trip_info": {
+          "origin": "杭州",
+          "destination": "上海",
+          "start_date": "2026-08-21",
+          "end_date": "2026-08-21",
+          "duration_days": 1,
+          "return_location": "杭州",
+          "trip_purpose": "商务会议",
+          "transport_requirement": "高铁",
+          "fixed_events": [
+            {
+              "date": "2026-08-21",
+              "time": "14:00-16:00",
+              "location": "上海浦东",
+              "title": "商务会议"
+            }
+          ]
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "杭州",
+          "destination": "上海",
+          "start_date": "2026-08-21",
+          "end_date": "2026-08-21",
+          "duration_days": 1
+        },
+        "required_content": [
+          {
+            "id": "meeting",
+            "description": "必须保留14:00至16:00的浦东会议。",
+            "all_of": ["14:00", "16:00", "浦东", "会议"],
+            "fatal": true
+          },
+          {
+            "id": "high_speed_rail",
+            "description": "往返交通应使用高铁。",
+            "any_of": ["高铁", "动车"]
+          },
+          {
+            "id": "return_hangzhou",
+            "description": "当天应返回杭州。",
+            "all_of": ["返回", "杭州"]
+          }
+        ],
+        "forbidden_content": [
+          {
+            "id": "tourist_attractions",
+            "description": "用户明确要求不安排旅游景点。",
+            "patterns": ["游览故宫", "游览外滩", "游览豫园", "景点打卡"]
+          }
+        ],
+        "judge_focus": [
+          "抵达浦东前是否留出足够缓冲",
+          "会议结束后返程是否现实",
+          "是否保持简洁而没有塞入旅游活动"
+        ]
+      }
+    },
+    {
+      "id": "hotel_brand_preference",
+      "name": "明确酒店品牌偏好",
+      "input": {
+        "user_query": "2026年9月7日从南京去广州出差3天，优先住全季酒店，办公地点在珠江新城。",
+        "trip_info": {
+          "origin": "南京",
+          "destination": "广州",
+          "start_date": "2026-09-07",
+          "end_date": "2026-09-09",
+          "duration_days": 3,
+          "return_location": "南京",
+          "trip_purpose": "商务办公",
+          "primary_work_location": "珠江新城"
+        },
+        "user_preferences": {
+          "hotel_brands": ["全季"]
+        },
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "destination": "广州",
+          "start_date": "2026-09-07",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "hotel_preference",
+            "description": "住宿建议应采用或明确讨论全季酒店偏好。",
+            "any_of": ["全季"]
+          },
+          {
+            "id": "work_location",
+            "description": "住宿和通勤安排应围绕珠江新城。",
+            "any_of": ["珠江新城"]
+          }
+        ],
+        "forbidden_content": [],
+        "judge_focus": [
+          "是否真实使用全季偏好而非只在备注中复述",
+          "住宿地点是否便于前往珠江新城",
+          "无法确认房态时是否使用候选或核实措辞"
+        ]
+      }
+    },
+    {
+      "id": "corporate_budget_and_hotel_policy",
+      "name": "明确预算和住宿标准",
+      "input": {
+        "user_query": "2026年9月14日从苏州去北京出差3天。公司规定高铁只能坐二等座，北京住宿每晚不超过500元。",
+        "trip_info": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-09-14",
+          "end_date": "2026-09-16",
+          "duration_days": 3,
+          "return_location": "苏州",
+          "trip_purpose": "企业差旅",
+          "policy_constraints": {
+            "train_seat": "二等座",
+            "hotel_budget_per_night": 500,
+            "currency": "CNY"
+          }
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "destination": "北京",
+          "start_date": "2026-09-14",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "train_policy",
+            "description": "交通建议必须遵守高铁二等座标准。",
+            "all_of": ["高铁", "二等座"],
+            "fatal": true
+          },
+          {
+            "id": "hotel_budget",
+            "description": "住宿建议必须明确遵守每晚不超过500元。",
+            "any_of": ["500元", "500 元", "不超过500"]
+          }
+        ],
+        "forbidden_content": [
+          {
+            "id": "forbidden_seat",
+            "description": "不得把商务座或一等座作为实际预订建议。",
+            "patterns": ["预订商务座", "选择商务座", "预订一等座", "选择一等座"],
+            "fatal": true
+          }
+        ],
+        "judge_focus": [
+          "住宿方案是否真正控制在标准内",
+          "交通与住宿建议是否同时符合企业政策",
+          "无法确认实时价格时是否提醒核实"
+        ]
+      }
+    },
+    {
+      "id": "required_train_forbidden_flight",
+      "name": "禁止航班并指定高铁",
+      "input": {
+        "user_query": "2026年9月21日从上海去武汉出差3天，只坐高铁，不要给我安排飞机。",
+        "trip_info": {
+          "origin": "上海",
+          "destination": "武汉",
+          "start_date": "2026-09-21",
+          "end_date": "2026-09-23",
+          "duration_days": 3,
+          "return_location": "上海",
+          "trip_purpose": "客户拜访",
+          "transport_requirement": "仅高铁",
+          "forbidden_transport": ["飞机"]
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "上海",
+          "destination": "武汉",
+          "start_date": "2026-09-21",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "required_transport",
+            "description": "主要往返交通必须安排高铁。",
+            "any_of": ["高铁", "动车"],
+            "fatal": true
+          }
+        ],
+        "forbidden_content": [
+          {
+            "id": "flight_recommendation",
+            "description": "不得把飞机或航班作为实际出行方案。",
+            "patterns": ["乘坐飞机", "搭乘飞机", "预订航班", "乘机前往"],
+            "fatal": true
+          }
+        ],
+        "judge_focus": [
+          "是否完整遵守只坐高铁的限制",
+          "往返高铁与市内行程衔接是否合理"
+        ]
+      }
+    },
+    {
+      "id": "preference_conflicts_with_budget",
+      "name": "偏好与预算发生冲突",
+      "input": {
+        "user_query": "2026年9月24日从杭州去上海出差2天。我喜欢住上海浦东丽思卡尔顿，但公司住宿标准每晚不能超过500元，必须遵守公司标准。",
+        "trip_info": {
+          "origin": "杭州",
+          "destination": "上海",
+          "start_date": "2026-09-24",
+          "end_date": "2026-09-25",
+          "duration_days": 2,
+          "return_location": "杭州",
+          "trip_purpose": "商务会议",
+          "policy_constraints": {
+            "hotel_budget_per_night": 500,
+            "currency": "CNY",
+            "policy_priority": "required"
+          }
+        },
+        "user_preferences": {
+          "hotel_brands": ["上海浦东丽思卡尔顿"]
+        },
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "destination": "上海",
+          "start_date": "2026-09-24",
+          "duration_days": 2
+        },
+        "required_content": [
+          {
+            "id": "conflict_explanation",
+            "description": "应识别酒店偏好与公司标准冲突，并说明优先遵守预算。",
+            "all_of": ["500", "公司", "标准"]
+          }
+        ],
+        "forbidden_content": [
+          {
+            "id": "over_budget_hotel_as_plan",
+            "description": "不得把上海浦东丽思卡尔顿作为实际住宿方案。",
+            "patterns": ["入住上海浦东丽思卡尔顿", "预订上海浦东丽思卡尔顿"],
+            "fatal": true
+          }
+        ],
+        "judge_focus": [
+          "是否正确处理软偏好与硬政策的优先级",
+          "是否给出500元以内的替代住宿思路",
+          "是否清楚解释取舍"
+        ]
+      }
+    },
+    {
+      "id": "authorized_historical_preferences",
+      "name": "已授权历史偏好的应用",
+      "input": {
+        "user_query": "2026年10月12日从上海去广州出差3天，按照我之前保存的偏好安排。",
+        "trip_info": {
+          "origin": "上海",
+          "destination": "广州",
+          "start_date": "2026-10-12",
+          "end_date": "2026-10-14",
+          "duration_days": 3,
+          "return_location": "上海",
+          "trip_purpose": "客户拜访"
+        },
+        "user_preferences": {
+          "hotel_brands": ["汉庭"],
+          "airlines": ["东方航空"],
+          "seat_preference": "靠窗"
+        },
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "destination": "广州",
+          "start_date": "2026-10-12",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "hotel_preference",
+            "description": "住宿建议应采用或讨论汉庭偏好。",
+            "any_of": ["汉庭"]
+          },
+          {
+            "id": "airline_preference",
+            "description": "航班建议应采用或讨论东方航空偏好。",
+            "any_of": ["东方航空", "东航"]
+          },
+          {
+            "id": "seat_preference",
+            "description": "座位建议应体现靠窗偏好。",
+            "any_of": ["靠窗"]
+          }
+        ],
+        "forbidden_content": [],
+        "judge_focus": [
+          "三项已授权偏好是否真正进入方案",
+          "无法确认航班或房态时是否避免假装已预订"
+        ]
+      }
+    },
+    {
+      "id": "missing_realtime_transport_information",
+      "name": "缺少实时车次信息",
+      "input": {
+        "user_query": "2026年8月24日从苏州去北京出差3天，请把往返交通也安排好。当前没有查询实时车次和余票。",
+        "trip_info": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-24",
+          "end_date": "2026-08-26",
+          "duration_days": 3,
+          "return_location": "苏州",
+          "trip_purpose": "商务出差"
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-24",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "verification_notice",
+            "description": "应提醒用户在12306或其他官方渠道核实车次、票价与余票。",
+            "any_of": ["12306", "核实", "查询实际车次", "以实际为准"]
+          }
+        ],
+        "forbidden_content": [
+          {
+            "id": "unsupported_confirmation",
+            "description": "没有实时查询结果时不得声称车次或余票已经确认。",
+            "patterns": ["余票充足", "车次已确认", "已为您预订", "已预订成功"],
+            "fatal": true
+          }
+        ],
+        "judge_focus": [
+          "是否用时间段或候选方案代替编造的确定车次",
+          "是否明确区分建议与实时事实",
+          "交通建议能否支撑三天行程"
+        ]
+      }
+    },
+    {
+      "id": "multi_city_continuous_business_trip",
+      "name": "两地连续差旅",
+      "input": {
+        "user_query": "2026年9月1日从苏州出发，先去杭州再去宁波，9月4日回苏州。9月2日10:00在杭州开会，9月3日14:00在宁波拜访客户。",
+        "trip_info": {
+          "origin": "苏州",
+          "destination": "杭州、宁波",
+          "start_date": "2026-09-01",
+          "end_date": "2026-09-04",
+          "duration_days": 4,
+          "return_location": "苏州",
+          "trip_purpose": "连续商务差旅",
+          "city_order": ["苏州", "杭州", "宁波", "苏州"],
+          "fixed_events": [
+            {
+              "date": "2026-09-02",
+              "time": "10:00",
+              "location": "杭州",
+              "title": "商务会议"
+            },
+            {
+              "date": "2026-09-03",
+              "time": "14:00",
+              "location": "宁波",
+              "title": "客户拜访"
+            }
+          ]
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "苏州",
+          "destination": "杭州、宁波",
+          "start_date": "2026-09-01",
+          "end_date": "2026-09-04",
+          "duration_days": 4,
+          "city_order": ["苏州", "杭州", "宁波", "苏州"]
+        },
+        "required_content": [
+          {
+            "id": "hangzhou_meeting",
+            "description": "必须保留9月2日10:00的杭州会议。",
+            "all_of": ["2026-09-02", "10:00", "杭州", "会议"],
+            "fatal": true
+          },
+          {
+            "id": "ningbo_visit",
+            "description": "必须保留9月3日14:00的宁波客户拜访。",
+            "all_of": ["2026-09-03", "14:00", "宁波", "客户"],
+            "fatal": true
+          },
+          {
+            "id": "return_suzhou",
+            "description": "最后应返回苏州。",
+            "all_of": ["返回", "苏州"]
+          }
+        ],
+        "forbidden_content": [],
+        "judge_focus": [
+          "是否按照苏州到杭州到宁波再回苏州的顺序规划",
+          "跨城交通是否与两场固定活动衔接",
+          "四天日期和城市是否一致"
+        ]
+      }
+    }
+  ]
+}

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Optional
 
-from evaluation.system_evaluator import evaluate_case
+from evaluation.system.system_evaluator import evaluate_case
 
 
 class SystemEvaluationRunner:

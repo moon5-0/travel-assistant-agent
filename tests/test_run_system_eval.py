@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from context.memory_manager import MemoryManager
-from evaluation.run_system_eval import (
+from evaluation.system.run_system_eval import (
     build_execution_summary,
     seed_initial_state,
     select_cases,

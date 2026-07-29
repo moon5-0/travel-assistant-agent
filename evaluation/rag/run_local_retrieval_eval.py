@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """不依赖 Milvus，用本地 BGE 和原始文档复现稠密检索评估。
 
-运行：python3 evaluation/run_local_retrieval_eval.py
+运行：python3 evaluation/rag/run_local_retrieval_eval.py
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import RAG_CONFIG
-from evaluation.rag_evaluator import RAGEvaluator, load_cases
+from evaluation.rag.rag_evaluator import RAGEvaluator, load_cases
 
 
 def split_text(text: str, max_chars: int = 600, overlap: int = 100):

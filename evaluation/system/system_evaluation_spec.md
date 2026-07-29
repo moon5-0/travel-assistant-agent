@@ -7,7 +7,7 @@
 1. **System Evaluation**：判断系统有没有理解并按正确流程完成任务；
 2. **Task Result Quality Evaluation**：判断最终行程内容是否正确、合理、完整和好用。
 
-当前只实现第一阶段，扩展数据集版本为 v0.3.1。最终回复的措辞、行程安排质量、推荐合理性和表达效果不参与本阶段通过率，第二阶段边界见 `itinerary_quality_evaluation_spec.md`。
+当前只实现第一阶段，扩展数据集版本为 v0.3.1。最终回复的措辞、行程安排质量、推荐合理性和表达效果不参与本阶段通过率，第二阶段边界见 `../itinerary_quality/itinerary_quality_evaluation_spec.md`。
 
 这样拆分后，可以明确回答两类问题：
 
@@ -148,16 +148,22 @@ v0.2 对待补全状态作如下校准：
 
 ```text
 evaluation/
-├── system_evaluation_spec.md            # 第一阶段规范
-├── system_cases.json                     # 系统行为场景
-├── system_evaluator.py                   # 数据校验和结构化断言
-├── system_trace_collector.py             # 采集真实执行轨迹
-├── system_eval_runner.py                 # 场景隔离、多轮运行和汇总
-├── run_system_eval.py                    # 真实模型命令入口
-├── itinerary_quality_evaluation_spec.md  # 第二阶段边界，暂未实现
-├── rag_cases.json                        # RAG 专项数据
-├── rag_evaluator.py                      # RAG 专项评分器
-└── results/                              # 本地原始报告（Git 忽略）
+├── system/                               # 系统行为评估
+│   ├── system_evaluation_spec.md
+│   ├── system_cases.json
+│   ├── system_evaluator.py
+│   ├── system_trace_collector.py
+│   ├── system_eval_runner.py
+│   ├── run_system_eval.py
+│   ├── reports/                          # 人工归档的版本报告
+│   └── results/                          # 自动生成报告（Git 忽略）
+├── itinerary_quality/                    # 行程结果质量评估
+│   ├── itinerary_quality_evaluation_spec.md
+│   └── itinerary_quality_cases.json
+└── rag/                                  # RAG 检索与生成评估
+    ├── rag_cases.json
+    ├── rag_evaluator.py
+    └── run_local_retrieval_eval.py
 ```
 
 ## 7. 使用方式
@@ -165,19 +171,19 @@ evaluation/
 只校验数据集和预计执行量，不调用模型：
 
 ```bash
-python evaluation/run_system_eval.py --dry-run
+python evaluation/system/run_system_eval.py --dry-run
 ```
 
 真实运行全部系统场景一次：
 
 ```bash
-python evaluation/run_system_eval.py --runs 1
+python evaluation/system/run_system_eval.py --runs 1
 ```
 
 真实运行一个指定场景：
 
 ```bash
-python evaluation/run_system_eval.py \
+python evaluation/system/run_system_eval.py \
   --case trip_missing_required_fields \
   --runs 1
 ```

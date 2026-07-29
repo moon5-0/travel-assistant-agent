@@ -2,10 +2,10 @@
 """运行真实 System Evaluation 并生成系统行为基线报告。
 
 先检查但不调用模型：
-    python evaluation/run_system_eval.py --dry-run
+    python evaluation/system/run_system_eval.py --dry-run
 
 只运行一个场景一次：
-    python evaluation/run_system_eval.py --case trip_missing_required_fields --runs 1
+    python evaluation/system/run_system_eval.py --case trip_missing_required_fields --runs 1
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Dict, Iterable
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.intention_agent import IntentionAgent
@@ -34,14 +34,14 @@ from agentscope.model import OpenAIChatModel
 from config import LLM_CONFIG, RESILIENCE_CONFIG, SYSTEM_CONFIG
 from config_agentscope import init_agentscope
 from context.memory_manager import MemoryManager
-from evaluation.system_eval_runner import SystemEvaluationRunner
-from evaluation.system_evaluator import DEFAULT_CASES_PATH, load_dataset
-from evaluation.system_trace_collector import SystemTraceCollector
+from evaluation.system.system_eval_runner import SystemEvaluationRunner
+from evaluation.system.system_evaluator import DEFAULT_CASES_PATH, load_dataset
+from evaluation.system.system_trace_collector import SystemTraceCollector
 from services.turn_executor import AgentTurnExecutor
 from utils.circuit_breaker import CircuitBreaker
 
 
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "results"
+DEFAULT_OUTPUT_DIR = Path(__file__).with_name("results")
 
 
 def seed_initial_state(

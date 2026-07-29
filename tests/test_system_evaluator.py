@@ -7,7 +7,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from evaluation.system_evaluator import (
+from evaluation.system.system_evaluator import (
     DatasetValidationError,
     evaluate_case,
     evaluate_turn,
