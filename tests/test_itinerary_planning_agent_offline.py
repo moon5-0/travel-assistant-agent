@@ -110,6 +110,10 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             model.calls[0]["kwargs"]["response_format"],
             {"type": "json_object"},
         )
+        self.assertIn(
+            "活动时间框、描述中的交通时间或耗时、下一项活动开始时间",
+            model.calls[0]["messages"][0]["content"],
+        )
 
     async def test_repairs_malformed_json_once(self):
         malformed = """{
@@ -165,6 +169,159 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["planning_complete"])
         self.assertIn("error", result)
+        self.assertEqual(len(model.calls), 2)
+
+    async def test_time_conflict_triggers_one_targeted_repair(self):
+        conflicting = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [
+                    {
+                        "day": 1,
+                        "date": "2026-08-10",
+                        "activities": [
+                            {
+                                "time": "07:00-08:00",
+                                "location": "苏州北站至北京南站",
+                                "description": (
+                                    "乘坐G4次高铁（07:00-11:25）前往北京。"
+                                ),
+                            },
+                            {
+                                "time": "12:00-13:00",
+                                "location": "酒店",
+                                "description": "办理入住。",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        repaired = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [
+                    {
+                        "day": 1,
+                        "date": "2026-08-10",
+                        "activities": [
+                            {
+                                "time": "07:00-11:30",
+                                "location": "苏州北站至北京南站",
+                                "description": (
+                                    "乘坐G4次高铁（07:00-11:25）前往北京。"
+                                ),
+                            },
+                            {
+                                "time": "12:00-13:00",
+                                "location": "酒店",
+                                "description": "办理入住。",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        model = FakeModel([conflicting, repaired])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input())
+        result = json.loads(response.content)
+
+        self.assertEqual(
+            result["itinerary"]["daily_plans"][0]["activities"][0]["time"],
+            "07:00-11:30",
+        )
+        self.assertEqual(len(model.calls), 2)
+        self.assertIn(
+            "transport_time_outside_activity",
+            model.calls[1]["messages"][1]["content"],
+        )
+        self.assertIn(
+            "允许调整、缩短、重新排序或删除",
+            model.calls[1]["messages"][0]["content"],
+        )
+        self.assertIn(
+            "普通用户偏好属于软约束",
+            model.calls[1]["messages"][0]["content"],
+        )
+
+    async def test_failed_time_repair_keeps_original_itinerary(self):
+        conflicting = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [
+                    {
+                        "day": 1,
+                        "activities": [
+                            {
+                                "time": "09:00-10:00",
+                                "location": "宁波站至苏州站",
+                                "description": "乘坐高铁，车程约2小时。",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        model = FakeModel([conflicting, "{invalid"])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input())
+        result = json.loads(response.content)
+
+        self.assertFalse(result["planning_complete"])
+        self.assertEqual(
+            result["itinerary"]["daily_plans"][0]["activities"][0]["time"],
+            "09:00-10:00",
+        )
+        self.assertEqual(
+            result["time_consistency"]["status"],
+            "unresolved",
+        )
+        self.assertIn(
+            "存在未能自动解决的时间冲突",
+            result["itinerary"]["notes"][0],
+        )
+        self.assertEqual(len(model.calls), 2)
+
+    async def test_remaining_conflict_after_repair_is_marked_unresolved(self):
+        conflicting = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [
+                    {
+                        "day": 1,
+                        "activities": [
+                            {
+                                "time": "09:00-10:00",
+                                "location": "宁波站至苏州站",
+                                "description": "乘坐高铁，车程约2小时。",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        model = FakeModel([conflicting, conflicting])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input())
+        result = json.loads(response.content)
+
+        self.assertFalse(result["planning_complete"])
+        self.assertEqual(
+            result["time_consistency"]["issues"][0]["category"],
+            "transport_duration_exceeds_activity",
+        )
         self.assertEqual(len(model.calls), 2)
 
 
