@@ -38,6 +38,15 @@ python evaluation/itinerary_quality/run_itinerary_quality_eval.py --dry-run
 python evaluation/itinerary_quality/run_itinerary_quality_eval.py --runs 1
 ```
 
+复用已有行程运行LLM Judge，不重新生成行程：
+
+```bash
+python evaluation/itinerary_quality/run_itinerary_llm_judge.py --dry-run
+python evaluation/itinerary_quality/run_itinerary_llm_judge.py
+```
+
+人工归档报告放在 `itinerary_quality/reports/`，自动生成的原始结果放在 `itinerary_quality/results/`。
+
 使用指定场景评价一份已保存的行程 JSON：
 
 ```bash

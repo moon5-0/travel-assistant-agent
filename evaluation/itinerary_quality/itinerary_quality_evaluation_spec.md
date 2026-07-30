@@ -202,6 +202,8 @@ evaluation/itinerary_quality/
 ├── itinerary_quality_cases.json           # 固定结构化场景与期望约束
 ├── hard_rule_evaluator.py                  # 确定性硬约束检查
 ├── run_itinerary_quality_eval.py           # 真实规划Agent运行入口
+├── llm_judge.py                             # 四维结构化Judge与代码计分
+├── run_itinerary_llm_judge.py               # 复用已有行程运行Judge
 └── results/                                # 自动生成报告（Git 忽略）
 ```
 
