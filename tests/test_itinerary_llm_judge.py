@@ -14,7 +14,7 @@ from evaluation.itinerary_quality.llm_judge import (
     score_judge_output,
     validate_evidence_grounding,
 )
-from evaluation.itinerary_quality.run_itinerary_llm_judge import run_judging
+from evaluation.itinerary_quality.judge_itinerary_outputs import run_judging
 from tests.test_itinerary_hard_rule_evaluator import valid_standard_output
 
 

@@ -1,4 +1,4 @@
-"""行程质量真实运行入口的离线测试。"""
+"""行程输出生成入口的离线测试。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 
 from evaluation.itinerary_quality.hard_rule_evaluator import load_dataset
-from evaluation.itinerary_quality.run_itinerary_quality_eval import (
+from evaluation.itinerary_quality.generate_itinerary_outputs import (
     build_agent_input,
     build_execution_summary,
     run_cases,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""直接运行 ItineraryPlanningAgent，并执行行程质量硬规则评估。
+"""生成 ItineraryPlanningAgent 输出，并执行行程质量硬规则评估。
 
 第一版只生成 Hard Constraint Pass Rate 和 Fatal Error Rate；
 LLM Judge 的主观质量分将在后续阶段接入。
@@ -126,7 +126,10 @@ def build_execution_summary(
         "runs_per_case": runs,
         "total_agent_calls": len(cases) * runs,
         "evaluation_stage": "hard_rules_only",
-        "note": "每次通常调用规划模型1次；格式修复发生时会额外调用1次。",
+        "note": (
+            "每次通常调用规划模型1次；格式异常或检测到明确时间冲突时，"
+            "对应修复步骤会各额外调用1次。"
+        ),
     }
 
 
@@ -239,12 +242,12 @@ async def run_cases(
 
 def default_output_path() -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return DEFAULT_OUTPUT_DIR / f"itinerary-quality-hard-{timestamp}.json"
+    return DEFAULT_OUTPUT_DIR / f"itinerary-outputs-{timestamp}.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run ItineraryPlanningAgent hard-rule evaluation",
+        description="Generate itinerary outputs and run hard constraints",
     )
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument(

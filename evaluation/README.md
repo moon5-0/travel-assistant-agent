@@ -29,20 +29,21 @@ python -m evaluation.itinerary_quality.hard_rule_evaluator
 查看真实评估的执行规模，不调用模型：
 
 ```bash
-python evaluation/itinerary_quality/run_itinerary_quality_eval.py --dry-run
+python evaluation/itinerary_quality/generate_itinerary_outputs.py --dry-run
 ```
 
 运行全部场景一次：
 
 ```bash
-python evaluation/itinerary_quality/run_itinerary_quality_eval.py --runs 1
+python evaluation/itinerary_quality/generate_itinerary_outputs.py --runs 1
 ```
 
 复用已有行程运行LLM Judge，不重新生成行程：
 
 ```bash
-python evaluation/itinerary_quality/run_itinerary_llm_judge.py --dry-run
-python evaluation/itinerary_quality/run_itinerary_llm_judge.py
+python evaluation/itinerary_quality/judge_itinerary_outputs.py --dry-run
+python evaluation/itinerary_quality/judge_itinerary_outputs.py \
+  --input-report /path/to/generated-itinerary-report.json
 ```
 
 人工归档报告放在 `itinerary_quality/reports/`，自动生成的原始结果放在 `itinerary_quality/results/`。

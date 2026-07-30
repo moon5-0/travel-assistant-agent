@@ -66,6 +66,7 @@ tmp/
 evaluation/system/results/agent-baseline-*.json
 evaluation/system/results/system-baseline-*.json
 evaluation/itinerary_quality/results/itinerary-quality-*.json
+evaluation/itinerary_quality/results/itinerary-outputs-*.json
 
 # OS
 .DS_Store

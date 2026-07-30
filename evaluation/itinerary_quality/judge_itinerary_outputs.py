@@ -28,15 +28,19 @@ from evaluation.itinerary_quality.llm_judge import (
     DIMENSION_WEIGHTS,
     LLMItineraryJudge,
 )
-from evaluation.itinerary_quality.run_itinerary_quality_eval import build_model
+from evaluation.itinerary_quality.generate_itinerary_outputs import build_model
 
 
 RESULTS_DIR = Path(__file__).with_name("results")
 
 
-def latest_hard_report() -> Path | None:
+def latest_generated_report() -> Path | None:
     reports = sorted(
-        RESULTS_DIR.glob("itinerary-quality-hard-*.json"),
+        [
+            *RESULTS_DIR.glob("itinerary-outputs-*.json"),
+            # 兼容重命名前生成的本地报告。
+            *RESULTS_DIR.glob("itinerary-quality-hard-*.json"),
+        ],
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
@@ -218,7 +222,7 @@ async def run_judging(
 
 def default_output_path() -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return RESULTS_DIR / f"itinerary-quality-combined-{timestamp}.json"
+    return RESULTS_DIR / f"itinerary-quality-judged-{timestamp}.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -236,9 +240,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    source_path = args.input_report or latest_hard_report()
+    source_path = args.input_report or latest_generated_report()
     if source_path is None:
-        print("INVALID: 未找到itinerary-quality-hard报告")
+        print("INVALID: 未找到已生成的行程输出报告")
         return 2
 
     try:
