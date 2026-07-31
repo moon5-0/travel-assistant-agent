@@ -393,7 +393,10 @@ class OrchestrationAgent(AgentBase):
             "reasoning": intention_data.get("reasoning", ""),
             "intents": intention_data.get("intents", []),
             "key_entities": intention_data.get("key_entities", {}),
-            "rewritten_query": intention_data.get("rewritten_query", "")
+            "rewritten_query": intention_data.get("rewritten_query", ""),
+            # IntentionAgent 只提供开放语义信号；最终规划模式由规划策略层
+            # 结合事项收集结果确定，避免让模型直接控制业务规则。
+            "planning_signals": intention_data.get("planning_signals", {}),
         }
 
         # 这里会再次读取记忆，但用途不同于 CLI 给 IntentionAgent 的历史摘要：

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from utils.json_parser import (
     extract_json_from_async_response,
@@ -40,7 +40,15 @@ class SemanticFatalError(BaseModel):
 
     category: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    evidence: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1, max_length=3)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def normalize_evidence(cls, value: Any) -> Any:
+        """兼容旧版单个证据字符串，内部统一使用证据数组。"""
+        if isinstance(value, str):
+            return [value]
+        return value
 
 
 class JudgeModelOutput(BaseModel):
@@ -54,6 +62,38 @@ class JudgeModelOutput(BaseModel):
     factual_groundedness: DimensionEvaluation
     semantic_fatal_errors: list[SemanticFatalError] = Field(default_factory=list)
     overall_summary: str = Field(min_length=1)
+
+
+JUDGE_OUTPUT_CONTRACT = {
+    "time_route_feasibility": {
+        "score": 1,
+        "reason": "评分理由",
+        "evidence": ["E001"],
+    },
+    "business_personalization": {
+        "score": 1,
+        "reason": "评分理由",
+        "evidence": ["E001"],
+    },
+    "completeness_usability": {
+        "score": 1,
+        "reason": "评分理由",
+        "evidence": ["E001"],
+    },
+    "factual_groundedness": {
+        "score": 1,
+        "reason": "评分理由",
+        "evidence": ["E001"],
+    },
+    "semantic_fatal_errors": [
+        {
+            "category": "错误类型",
+            "description": "为什么足以导致不可执行",
+            "evidence": ["E001"],
+        }
+    ],
+    "overall_summary": "整体评价",
+}
 
 
 def score_judge_output(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,17 +172,16 @@ def validate_evidence_grounding(
         dimension["evidence_details"] = details
 
     for fatal_error in scored_result["semantic_fatal_errors"]:
-        evidence_id = fatal_error["evidence"]
-        if evidence_id not in catalog:
-            invalid_references.append({
-                "location": "semantic_fatal_errors.evidence",
-                "evidence_id": evidence_id,
-            })
-        else:
-            fatal_error["evidence_detail"] = {
-                "id": evidence_id,
-                **catalog[evidence_id],
-            }
+        details = []
+        for evidence_id in fatal_error["evidence"]:
+            if evidence_id not in catalog:
+                invalid_references.append({
+                    "location": "semantic_fatal_errors.evidence",
+                    "evidence_id": evidence_id,
+                })
+                continue
+            details.append({"id": evidence_id, **catalog[evidence_id]})
+        fatal_error["evidence_details"] = details
     if invalid_references:
         raise ValueError(
             "Judge evidence IDs must exist in evidence catalog: "
@@ -188,41 +227,11 @@ def build_judge_messages(
 semantic_fatal_errors只记录需要语义理解才能发现、且足以令行程不可执行的严重错误，例如固定会议冲突、关键交通在时间上不可能、明确违反硬政策、把未查询信息说成已确认或已预订。普通啰嗦、次要信息缺失、景点选择一般不能列为致命错误。
 
 每个维度必须提供1到3个evidence_catalog中真实存在的证据编号，例如E001。只能输出编号，不能把原文或自行概括的句子放入evidence。只输出合法JSON，不输出Markdown或额外解释。"""
-    output_contract = {
-        "time_route_feasibility": {
-            "score": 1,
-            "reason": "评分理由",
-            "evidence": ["E001"],
-        },
-        "business_personalization": {
-            "score": 1,
-            "reason": "评分理由",
-            "evidence": ["E001"],
-        },
-        "completeness_usability": {
-            "score": 1,
-            "reason": "评分理由",
-            "evidence": ["E001"],
-        },
-        "factual_groundedness": {
-            "score": 1,
-            "reason": "评分理由",
-            "evidence": ["E001"],
-        },
-        "semantic_fatal_errors": [
-            {
-                "category": "错误类型",
-                "description": "为什么足以导致不可执行",
-                "evidence": "E001",
-            }
-        ],
-        "overall_summary": "整体评价",
-    }
     user_prompt = (
         "请评价以下企业差旅行程。没有语义致命错误时，"
         "semantic_fatal_errors必须输出空数组。\n\n"
         f"【评估材料】\n{json.dumps(evaluation_input, ensure_ascii=False, indent=2)}\n\n"
-        f"【输出JSON结构】\n{json.dumps(output_contract, ensure_ascii=False, indent=2)}"
+        f"【输出JSON结构】\n{json.dumps(JUDGE_OUTPUT_CONTRACT, ensure_ascii=False, indent=2)}"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -284,10 +293,17 @@ class LLMItineraryJudge:
             {
                 "role": "user",
                 "content": (
-                    "根对象必须包含四个评分维度、semantic_fatal_errors和"
-                    "overall_summary。每个维度包含1到5的整数score、非空reason和"
+                    "根对象字段名必须且只能是time_route_feasibility、"
+                    "business_personalization、completeness_usability、"
+                    "factual_groundedness、semantic_fatal_errors、overall_summary。"
+                    "禁止改成accuracy、feasibility、completeness、consistency、"
+                    "rationality或personalization等其他名称。"
+                    "每个维度包含1到5的整数score、非空reason和"
                     "1到3条evidence。evidence只能填写下方证据目录中存在的E编号，"
                     "不能填写原文或概括。semantic_fatal_errors必须是数组。\n"
+                    "semantic_fatal_errors中的evidence也必须是包含1到3个E编号的数组。\n"
+                    f"唯一合法的JSON结构：\n"
+                    f"{json.dumps(JUDGE_OUTPUT_CONTRACT, ensure_ascii=False, indent=2)}\n"
                     f"校验错误：{validation_error}\n"
                     f"证据目录：\n{json.dumps(build_evidence_catalog(itinerary_output), ensure_ascii=False)}\n"
                     f"待修复内容：\n{invalid_text[:12000]}"

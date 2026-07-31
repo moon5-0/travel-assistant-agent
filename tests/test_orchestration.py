@@ -136,6 +136,7 @@ class FakeMemoryManager:
 def intention_message(
     schedule,
     original_user_input: str = "2026年7月24日从苏州前往杭州",
+    planning_signals=None,
 ):
     """构造协调器实际接收的 IntentionAgent 输出。"""
     data = {
@@ -145,6 +146,8 @@ def intention_message(
         "rewritten_query": "从苏州前往杭州",
         "agent_schedule": schedule,
     }
+    if planning_signals is not None:
+        data["planning_signals"] = planning_signals
     return Msg(
         name="IntentionAgent",
         content=json.dumps(data, ensure_ascii=False),
@@ -154,6 +157,46 @@ def intention_message(
 
 
 class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
+    async def test_planning_signals_are_forwarded_to_planning_agent(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "duration_days": 2,
+                "trip_purpose": "客户沟通",
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": [{"day": 1}]}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+        signals = {
+            "trip_type": "business",
+            "leisure_preference": "forbidden",
+            "explicit_constraints": ["办完即返"],
+        }
+
+        await orchestrator.reply(intention_message(
+            [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+            original_user_input="8月10日从苏州去北京两天，办完就回来",
+            planning_signals=signals,
+        ))
+
+        self.assertEqual(
+            plan_agent.received_input["context"]["planning_signals"],
+            signals,
+        )
+
     async def test_unmentioned_trip_purpose_is_not_used_or_persisted(self):
         memory = FakeMemoryManager()
         event_agent = FakeAgent(

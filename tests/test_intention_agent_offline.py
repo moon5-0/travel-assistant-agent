@@ -95,6 +95,67 @@ def make_agent(model):
 
 
 class TestIntentionAgentOffline(unittest.IsolatedAsyncioTestCase):
+    async def test_preserves_planning_signals_for_uncommon_expression(self):
+        model_output = json.dumps({
+            "reasoning": "用户要求纯商务出行",
+            "intents": [
+                {"type": "itinerary_planning", "confidence": 0.98},
+            ],
+            "key_entities": {"destination": "北京"},
+            "rewritten_query": "去北京处理工作，办完即返",
+            "planning_signals": {
+                "trip_type": "business",
+                "leisure_preference": "forbidden",
+                "explicit_constraints": ["办完即返"],
+            },
+            "agent_schedule": [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+        }, ensure_ascii=False)
+        model = FakeModel(content=model_output)
+        agent = make_agent(model)
+
+        response = await agent.reply(Msg(
+            name="User",
+            content="我不想把这趟差事搞得跟度假一样，事情办完就回来",
+            role="user",
+        ))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["planning_signals"]["trip_type"], "business")
+        self.assertEqual(
+            result["planning_signals"]["leisure_preference"],
+            "forbidden",
+        )
+        prompt = model.calls[0]["messages"][1]["content"]
+        self.assertIn("不直接决定最终 planning_mode", prompt)
+
+    async def test_old_output_gets_safe_default_planning_signals(self):
+        model_output = json.dumps({
+            "reasoning": "用户查询天气",
+            "intents": [
+                {"type": "information_query", "confidence": 0.95},
+            ],
+            "key_entities": {"city": "杭州"},
+            "rewritten_query": "查询杭州天气",
+            "agent_schedule": [
+                {"agent_name": "information_query", "priority": 1},
+            ],
+        }, ensure_ascii=False)
+        agent = make_agent(FakeModel(content=model_output))
+
+        response = await agent.reply(
+            Msg(name="User", content="杭州天气怎么样", role="user")
+        )
+        result = json.loads(response.content)
+
+        self.assertEqual(result["planning_signals"], {
+            "trip_type": "unknown",
+            "leisure_preference": "unspecified",
+            "explicit_constraints": [],
+        })
+
     async def test_explicit_previous_trip_reuse_adds_memory_query(self):
         model_output = json.dumps({
             "reasoning": "用户希望按上次行程继续规划",

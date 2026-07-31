@@ -39,6 +39,20 @@ class AgentScheduleItem(BaseModel):
     expected_output: str = ""
 
 
+class PlanningSignals(BaseModel):
+    """与行程规划有关的开放语义信号，不直接决定最终规划模式。"""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    trip_type: Literal["business", "personal", "unknown"] = "unknown"
+    leisure_preference: Literal[
+        "forbidden",
+        "requested",
+        "unspecified",
+    ] = "unspecified"
+    explicit_constraints: list[str] = Field(default_factory=list)
+
+
 class IntentionResult(BaseModel):
     """IntentionAgent 与后续调度链路之间的稳定数据合同。"""
 
@@ -49,6 +63,7 @@ class IntentionResult(BaseModel):
     key_entities: dict[str, Any]
     rewritten_query: str = Field(min_length=1)
     agent_schedule: list[AgentScheduleItem]
+    planning_signals: PlanningSignals = Field(default_factory=PlanningSignals)
 
 
 def validate_intention_result(value: dict[str, Any]) -> dict[str, Any]:

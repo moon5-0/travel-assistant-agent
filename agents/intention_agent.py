@@ -152,7 +152,17 @@ class IntentionAgent(AgentBase):
 - 补全省略的上下文信息
 - 提取和重组关键信息
 
-**第4步：构建结构化决策**
+**第4步：提取行程规划语义信号**
+- 仅在行程规划相关请求中判断 trip_type 和 leisure_preference
+- trip_type 只能是 business、personal、unknown
+- leisure_preference 只能是 forbidden、requested、unspecified
+- forbidden 表示用户明确拒绝旅游或希望办完即返，不要机械依赖“旅游”等关键词
+- requested 表示用户明确要求或允许顺便游览、休闲活动
+- unspecified 表示用户没有表达休闲态度，不得因为目的地有景点就自行推断
+- explicit_constraints 只记录用户明确说出的规划限制
+- 这里只提取语义信号，不直接决定最终 planning_mode
+
+**第5步：构建结构化决策**
 - 基于识别的意图，决定调用哪些子智能体
 - 说明调用顺序和优先级
 - 输出结构化的调用策略
@@ -181,6 +191,12 @@ class IntentionAgent(AgentBase):
     }},
 
     "rewritten_query": "标准化、补全后的查询内容",
+
+    "planning_signals": {{
+        "trip_type": "business、personal 或 unknown",
+        "leisure_preference": "forbidden、requested 或 unspecified",
+        "explicit_constraints": ["用户明确提出的规划限制"]
+    }},
 
     "agent_schedule": [
         {{
@@ -284,6 +300,9 @@ class IntentionAgent(AgentBase):
                     "其中 agent_name 只能使用 memory_query、itinerary_planning、"
                     "preference、information_query、rag_knowledge、event_collection，"
                     "priority 必须是大于等于1的整数。\n"
+                    "planning_signals 是可选字段；如果原结果包含该字段，"
+                    "trip_type 只能是 business、personal、unknown，"
+                    "leisure_preference 只能是 forbidden、requested、unspecified。\n"
                     f"校验错误：{validation_error}\n"
                     "待修复内容：\n"
                     f"{invalid_text[:4000]}"
@@ -320,6 +339,11 @@ class IntentionAgent(AgentBase):
             ],
             "key_entities": {},
             "rewritten_query": user_query,
+            "planning_signals": {
+                "trip_type": "unknown",
+                "leisure_preference": "unspecified",
+                "explicit_constraints": [],
+            },
             "agent_schedule": [
                 {
                     "agent_name": "information_query",

@@ -65,6 +65,9 @@ def build_agent_input(case: Dict[str, Any]) -> Msg:
     context = {
         "rewritten_query": case_input["user_query"],
         "user_preferences": case_input["user_preferences"],
+        # 行程质量评估隔离规划 Agent，因此这里使用测试集提供的
+        # IntentionAgent 结构化语义信号，不在本阶段重复做意图识别。
+        "planning_signals": case_input["planning_signals"],
     }
     previous_results = [
         {

@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0-draft",
-  "description": "ItineraryPlanningAgent 第一批行程质量评估场景。固定结构化输入，独立评价规划结果，不评价上游路由与记忆读取。",
+  "version": "0.2.0-draft",
+  "description": "ItineraryPlanningAgent 第一批行程质量评估场景。固定输入包含上游已识别的planning_signals，独立评价规划结果，不评价上游路由与记忆读取。",
   "global_rules": {
     "unsupported_confirmation_patterns": [
       "已为您预订",
@@ -21,6 +21,11 @@
       "name": "标准三天商务出差",
       "input": {
         "user_query": "2026年8月10日从苏州去北京出差3天，拜访客户并安排适量的空闲活动。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "requested",
+          "explicit_constraints": ["安排适量的空闲活动"]
+        },
         "trip_info": {
           "origin": "苏州",
           "destination": "北京",
@@ -66,6 +71,11 @@
       "name": "含固定客户会议",
       "input": {
         "user_query": "2026年8月17日从上海去深圳出差3天。8月18日10:00到12:00必须在南山区科技园参加客户会议，请围绕会议安排行程。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["8月18日10:00到12:00的客户会议不可移动"]
+        },
         "trip_info": {
           "origin": "上海",
           "destination": "深圳",
@@ -114,6 +124,11 @@
       "name": "当天往返的紧凑行程",
       "input": {
         "user_query": "2026年8月21日从杭州坐高铁去上海当天往返，14:00到16:00在浦东参加会议，不要安排旅游景点。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "forbidden",
+          "explicit_constraints": ["当天往返", "不要安排旅游景点"]
+        },
         "trip_info": {
           "origin": "杭州",
           "destination": "上海",
@@ -180,6 +195,11 @@
       "name": "明确酒店品牌偏好",
       "input": {
         "user_query": "2026年9月7日从南京去广州出差3天，优先住全季酒店，办公地点在珠江新城。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["优先住全季酒店", "办公地点在珠江新城"]
+        },
         "trip_info": {
           "origin": "南京",
           "destination": "广州",
@@ -226,6 +246,11 @@
       "name": "明确预算和住宿标准",
       "input": {
         "user_query": "2026年9月14日从苏州去北京出差3天。公司规定高铁只能坐二等座，北京住宿每晚不超过500元。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["高铁只能坐二等座", "住宿每晚不超过500元"]
+        },
         "trip_info": {
           "origin": "苏州",
           "destination": "北京",
@@ -282,6 +307,11 @@
       "name": "禁止航班并指定高铁",
       "input": {
         "user_query": "2026年9月21日从上海去武汉出差3天，只坐高铁，不要给我安排飞机。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["只坐高铁", "不要安排飞机"]
+        },
         "trip_info": {
           "origin": "上海",
           "destination": "武汉",
@@ -330,6 +360,11 @@
       "name": "偏好与预算发生冲突",
       "input": {
         "user_query": "2026年9月24日从杭州去上海出差2天。我喜欢住上海浦东丽思卡尔顿，但公司住宿标准每晚不能超过500元，必须遵守公司标准。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["住宿每晚不能超过500元", "必须遵守公司标准"]
+        },
         "trip_info": {
           "origin": "杭州",
           "destination": "上海",
@@ -382,6 +417,11 @@
       "name": "已授权历史偏好的应用",
       "input": {
         "user_query": "2026年10月12日从上海去广州出差3天，按照我之前保存的偏好安排。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["按照已授权的历史偏好安排"]
+        },
         "trip_info": {
           "origin": "上海",
           "destination": "广州",
@@ -433,6 +473,11 @@
       "name": "缺少实时车次信息",
       "input": {
         "user_query": "2026年8月24日从苏州去北京出差3天，请把往返交通也安排好。当前没有查询实时车次和余票。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": ["当前没有实时车次和余票"]
+        },
         "trip_info": {
           "origin": "苏州",
           "destination": "北京",
@@ -479,6 +524,14 @@
       "name": "两地连续差旅",
       "input": {
         "user_query": "2026年9月1日从苏州出发，先去杭州再去宁波，9月4日回苏州。9月2日10:00在杭州开会，9月3日14:00在宁波拜访客户。",
+        "planning_signals": {
+          "trip_type": "business",
+          "leisure_preference": "unspecified",
+          "explicit_constraints": [
+            "城市顺序为苏州、杭州、宁波、苏州",
+            "固定商务事项不可移动"
+          ]
+        },
         "trip_info": {
           "origin": "苏州",
           "destination": "杭州、宁波",

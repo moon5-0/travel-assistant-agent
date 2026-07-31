@@ -14,6 +14,7 @@ from evaluation.itinerary_quality.generate_itinerary_outputs import (
     select_cases,
 )
 from tests.test_itinerary_hard_rule_evaluator import valid_standard_output
+from utils.planning_policy import determine_planning_mode
 
 
 class FakeItineraryAgent:
@@ -45,6 +46,10 @@ class TestItineraryQualityRunSetup(unittest.IsolatedAsyncioTestCase):
             payload["context"]["user_preferences"],
             self.case["input"]["user_preferences"],
         )
+        self.assertEqual(
+            payload["context"]["planning_signals"],
+            self.case["input"]["planning_signals"],
+        )
         event_result = payload["previous_results"][0]
         self.assertEqual(event_result["agent_name"], "event_collection")
         self.assertEqual(
@@ -55,6 +60,28 @@ class TestItineraryQualityRunSetup(unittest.IsolatedAsyncioTestCase):
     def test_unknown_case_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unknown"):
             select_cases(self.dataset, ["unknown"])
+
+    def test_dataset_signals_produce_expected_planning_modes(self):
+        expected_modes = {
+            "standard_three_day_business_trip":
+                "business_with_optional_leisure",
+            "same_day_round_trip": "business_only",
+        }
+
+        for case in self.dataset["cases"]:
+            payload = json.loads(build_agent_input(case).content)
+            mode = determine_planning_mode(
+                payload["context"]["rewritten_query"],
+                {
+                    "context": payload["context"],
+                    "event_collection": case["input"]["trip_info"],
+                },
+            )
+            self.assertEqual(
+                mode,
+                expected_modes.get(case["id"], "business_first"),
+                case["id"],
+            )
 
     def test_execution_summary_counts_model_calls(self):
         summary = build_execution_summary(

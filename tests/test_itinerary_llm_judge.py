@@ -99,6 +99,31 @@ class TestJudgeScoring(unittest.TestCase):
 
         self.assertFalse(result["judge_passed"])
         self.assertEqual(len(result["semantic_fatal_errors"]), 1)
+        self.assertEqual(
+            result["semantic_fatal_errors"][0]["evidence"],
+            ["E001"],
+        )
+
+    def test_semantic_fatal_error_accepts_multiple_evidence_ids(self):
+        output = valid_judge_output()
+        evidence_ids = list(build_evidence_catalog(valid_standard_output()))[:2]
+        output["semantic_fatal_errors"] = [{
+            "category": "unsupported_booking",
+            "description": "把未预订酒店表述成已预订。",
+            "evidence": evidence_ids,
+        }]
+
+        result = score_judge_output(output)
+        validate_evidence_grounding(result, valid_standard_output())
+
+        self.assertEqual(
+            result["semantic_fatal_errors"][0]["evidence"],
+            evidence_ids,
+        )
+        self.assertEqual(
+            len(result["semantic_fatal_errors"][0]["evidence_details"]),
+            2,
+        )
 
     def test_prompt_contains_task_context_and_not_only_itinerary(self):
         dataset = load_dataset()
@@ -155,6 +180,12 @@ class TestLLMItineraryJudge(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["judge_passed"])
         self.assertEqual(len(model.calls), 2)
+        repair_prompt = model.calls[1]["messages"][1]["content"]
+        self.assertIn("time_route_feasibility", repair_prompt)
+        self.assertIn("business_personalization", repair_prompt)
+        self.assertIn("completeness_usability", repair_prompt)
+        self.assertIn("factual_groundedness", repair_prompt)
+        self.assertIn("禁止改成accuracy", repair_prompt)
 
     async def test_ungrounded_evidence_is_repaired_once(self):
         invalid = valid_judge_output()

@@ -24,6 +24,8 @@ FATAL_TRIP_FIELDS = {
     "duration_days",
     "city_order",
 }
+PLANNING_TRIP_TYPES = {"business", "personal", "unknown"}
+LEISURE_PREFERENCES = {"forbidden", "requested", "unspecified"}
 
 
 class DatasetValidationError(ValueError):
@@ -112,6 +114,32 @@ def validate_dataset(dataset: Any) -> Dict[str, Any]:
         _require_string(
             case_input.get("user_query"),
             f"{location}.input.user_query",
+        )
+        planning_signals = _require_dict(
+            case_input.get("planning_signals"),
+            f"{location}.input.planning_signals",
+        )
+        trip_type = _require_string(
+            planning_signals.get("trip_type"),
+            f"{location}.input.planning_signals.trip_type",
+        )
+        if trip_type not in PLANNING_TRIP_TYPES:
+            raise DatasetValidationError(
+                f"{location}.input.planning_signals.trip_type "
+                f"must be one of {sorted(PLANNING_TRIP_TYPES)}"
+            )
+        leisure_preference = _require_string(
+            planning_signals.get("leisure_preference"),
+            f"{location}.input.planning_signals.leisure_preference",
+        )
+        if leisure_preference not in LEISURE_PREFERENCES:
+            raise DatasetValidationError(
+                f"{location}.input.planning_signals.leisure_preference "
+                f"must be one of {sorted(LEISURE_PREFERENCES)}"
+            )
+        _require_string_list(
+            planning_signals.get("explicit_constraints"),
+            f"{location}.input.planning_signals.explicit_constraints",
         )
         _require_dict(
             case_input.get("trip_info"),

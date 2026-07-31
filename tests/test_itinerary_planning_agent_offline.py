@@ -61,22 +61,35 @@ def make_agent(model):
     return agent
 
 
-def make_input():
+def make_input(
+    query="2026年8月10日从苏州去北京3天",
+    trip_purpose=None,
+    fixed_events=None,
+    planning_signals=None,
+):
+    event_data = {
+        "origin": "苏州",
+        "destination": "北京",
+        "start_date": "2026-08-10",
+        "duration_days": 3,
+    }
+    if trip_purpose is not None:
+        event_data["trip_purpose"] = trip_purpose
+    if fixed_events is not None:
+        event_data["fixed_events"] = fixed_events
+    context = {
+        "rewritten_query": query,
+        "user_preferences": {},
+    }
+    if planning_signals is not None:
+        context["planning_signals"] = planning_signals
     content = {
-        "context": {
-            "rewritten_query": "2026年8月10日从苏州去北京3天",
-            "user_preferences": {},
-        },
+        "context": context,
         "previous_results": [
             {
                 "agent_name": "event_collection",
                 "result": {
-                    "data": {
-                        "origin": "苏州",
-                        "destination": "北京",
-                        "start_date": "2026-08-10",
-                        "duration_days": 3,
-                    }
+                    "data": event_data,
                 },
             }
         ],
@@ -89,6 +102,37 @@ def make_input():
 
 
 class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
+    async def test_business_mode_instruction_is_injected_into_prompt(self):
+        valid = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "3天",
+                "daily_plans": [],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        model = FakeModel([valid])
+        agent = make_agent(model)
+
+        await agent.reply(make_input(
+            query="事情办完以后直接回来",
+            trip_purpose="客户拜访",
+            planning_signals={
+                "trip_type": "business",
+                "leisure_preference": "forbidden",
+                "explicit_constraints": ["办完即返"],
+            },
+        ))
+
+        prompt = model.calls[0]["messages"][0]["content"]
+        self.assertIn("企业差旅（纯商务）", prompt)
+        self.assertIn("不得添加景点", prompt)
+        self.assertIn('"planning_mode": "business_only"', prompt)
+        self.assertIn('"leisure_preference": "forbidden"', prompt)
+        self.assertIn("daily_plans 必须完整覆盖对应天数和日期", prompt)
+        self.assertIn("missing_info 只用于记录仍建议确认的可选细节", prompt)
+        self.assertIn("planning_complete 才设为 false", prompt)
+
     async def test_valid_json_does_not_trigger_repair(self):
         valid = json.dumps({
             "itinerary": {

@@ -76,8 +76,29 @@ class TestItineraryQualityDataset(unittest.TestCase):
     def test_project_dataset_is_valid_and_contains_ten_cases(self):
         summary = summarize_dataset(self.dataset)
 
-        self.assertEqual(summary["version"], "0.1.0-draft")
+        self.assertEqual(summary["version"], "0.2.0-draft")
         self.assertEqual(summary["case_count"], 10)
+
+    def test_invalid_planning_signal_is_rejected(self):
+        invalid = copy.deepcopy(self.dataset)
+        signals = invalid["cases"][0]["input"]["planning_signals"]
+        signals["leisure_preference"] = "sometimes"
+
+        with self.assertRaisesRegex(
+            DatasetValidationError,
+            "leisure_preference",
+        ):
+            validate_dataset(invalid)
+
+    def test_missing_planning_signals_is_rejected(self):
+        invalid = copy.deepcopy(self.dataset)
+        del invalid["cases"][0]["input"]["planning_signals"]
+
+        with self.assertRaisesRegex(
+            DatasetValidationError,
+            "planning_signals",
+        ):
+            validate_dataset(invalid)
 
     def test_duplicate_case_id_is_rejected(self):
         invalid = copy.deepcopy(self.dataset)

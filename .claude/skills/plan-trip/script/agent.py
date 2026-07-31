@@ -17,6 +17,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 
 from utils.json_parser import robust_json_parse, extract_json_from_async_response
 from utils.itinerary_time_validator import find_itinerary_time_issues
+from utils.planning_policy import (
+    determine_planning_mode,
+    planning_mode_instruction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +81,10 @@ class ItineraryPlanningAgent(AgentBase):
             if result_data and agent_name:
                 all_info[agent_name] = result_data
 
+        planning_mode = determine_planning_mode(user_query, all_info)
+        all_info["planning_mode"] = planning_mode
+        mode_instruction = planning_mode_instruction(planning_mode)
+
         # 构建用户偏好信息
         preferences_info = ""
         if user_preferences:
@@ -121,6 +129,14 @@ class ItineraryPlanningAgent(AgentBase):
 
 【任务说明与指南】
 {skill_instruction}
+
+【本次规划模式】
+{mode_instruction}
+
+【行程完整性硬性要求】
+1. 如果事项信息提供了 duration_days、start_date 或 end_date，daily_plans 必须完整覆盖对应天数和日期，不得少生成或多生成某一天。
+2. missing_info 只用于记录仍建议确认的可选细节。酒店门店、普通商务活动地点等非必要细节待确认时，仍应先给出可执行方案并将 planning_complete 设为 true。
+3. 只有无法覆盖必需日期、存在未解决的硬约束冲突或时间冲突、或者无法生成可执行主体方案时，planning_complete 才设为 false。
 
 【时间一致性硬性要求】
 1. 每项活动的 time 必须完整覆盖描述中出现的明确出发时间、到达时间和交通耗时。
