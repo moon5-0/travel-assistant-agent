@@ -16,7 +16,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 # sys.path.insert(0, str(project_root))
 
 from utils.json_parser import robust_json_parse, extract_json_from_async_response
-from utils.itinerary_time_validator import find_itinerary_time_issues
+from utils.itinerary_time_validator import (
+    find_itinerary_time_feasibility_issues,
+)
 from utils.planning_policy import (
     determine_planning_mode,
     planning_mode_instruction,
@@ -136,13 +138,14 @@ class ItineraryPlanningAgent(AgentBase):
 【行程完整性硬性要求】
 1. 如果事项信息提供了 duration_days、start_date 或 end_date，daily_plans 必须完整覆盖对应天数和日期，不得少生成或多生成某一天。
 2. missing_info 只用于记录仍建议确认的可选细节。酒店门店、普通商务活动地点等非必要细节待确认时，仍应先给出可执行方案并将 planning_complete 设为 true。
-3. 只有无法覆盖必需日期、存在未解决的硬约束冲突或时间冲突、或者无法生成可执行主体方案时，planning_complete 才设为 false。
+3. 只有无法覆盖必需日期、存在未解决的硬约束冲突或时间可行性问题、或者无法生成可执行主体方案时，planning_complete 才设为 false。
 
-【时间一致性硬性要求】
+【时间可行性硬性要求】
 1. 每项活动的 time 必须完整覆盖描述中出现的明确出发时间、到达时间和交通耗时。
 2. 同一天的活动必须按时间顺序排列且不能重叠，后一项开始时间不得早于前一项结束时间。
 3. 固定会议、客户拜访等不可移动事件必须原样保留，并在前后安排必要的交通和缓冲。
-4. 输出前逐项核对活动时间框、描述中的交通时间或耗时、下一项活动开始时间，发现矛盾必须先修正。
+4. 铁路交通活动的开始时间视为发车时间；此前必须明确留出至少30分钟用于进站、安检、检票和候车。可以单独安排候车活动，但前往车站或在车站用餐不能代替该缓冲。
+5. 输出前逐项核对活动时间框、描述中的交通时间或耗时、出发前缓冲和下一项活动开始时间，发现矛盾必须先修正。
 
 请直接输出 JSON 格式的行程规划，不要输出 Markdown、注释或额外解释。
 JSON 字符串内部出现双引号时必须正确转义。
@@ -167,35 +170,37 @@ JSON 字符串内部出现双引号时必须正确转义。
                 )
                 result = await self._repair_output(text, first_error)
 
-            time_issues = find_itinerary_time_issues(result)
+            time_issues = find_itinerary_time_feasibility_issues(result)
             if time_issues:
                 logger.warning(
-                    "Itinerary time conflicts detected, attempting one repair: %s",
+                    "Itinerary time feasibility issues detected, attempting one repair: %s",
                     time_issues,
                 )
                 try:
-                    result = await self._repair_time_consistency(
+                    result = await self._repair_time_feasibility(
                         result,
                         time_issues,
                         all_info,
                     )
-                    remaining_issues = find_itinerary_time_issues(result)
+                    remaining_issues = find_itinerary_time_feasibility_issues(
+                        result
+                    )
                     if remaining_issues:
                         logger.warning(
-                            "Itinerary still has time conflicts after repair: %s",
+                            "Itinerary still has time feasibility issues after repair: %s",
                             remaining_issues,
                         )
-                        result = self._mark_time_conflicts_unresolved(
+                        result = self._mark_time_feasibility_unresolved(
                             result,
                             remaining_issues,
                         )
                 except Exception as repair_error:
                     # 保留原行程内容，但不能把已知有冲突的结果标成规划完成。
                     logger.warning(
-                        "Itinerary time repair failed; keeping original result: %s",
+                        "Itinerary time feasibility repair failed; keeping original result: %s",
                         repair_error,
                     )
-                    result = self._mark_time_conflicts_unresolved(
+                    result = self._mark_time_feasibility_unresolved(
                         result,
                         time_issues,
                     )
@@ -242,11 +247,11 @@ JSON 字符串内部出现双引号时必须正确转义。
         return result
 
     @staticmethod
-    def _mark_time_conflicts_unresolved(
+    def _mark_time_feasibility_unresolved(
         result: Dict[str, Any],
         issues: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """保留已有方案并显式暴露未解决冲突，避免假装行程可执行。"""
+        """保留已有方案并显式暴露未解决的时间可行性问题。"""
         result["planning_complete"] = False
         result["time_consistency"] = {
             "status": "unresolved",
@@ -258,7 +263,7 @@ JSON 字符串内部出现双引号时必须正确转义。
             if not isinstance(notes, list):
                 notes = []
                 itinerary["notes"] = notes
-            warning = "存在未能自动解决的时间冲突，请调整交通或可选活动后确认。"
+            warning = "存在未能自动解决的时间可行性问题，请调整交通或可选活动后确认。"
             if warning not in notes:
                 notes.append(warning)
         return result
@@ -297,18 +302,18 @@ JSON 字符串内部出现双引号时必须正确转义。
         repaired_text = await extract_json_from_async_response(response)
         return self._parse_and_validate(repaired_text)
 
-    async def _repair_time_consistency(
+    async def _repair_time_feasibility(
         self,
         original_result: Dict[str, Any],
         issues: List[Dict[str, Any]],
         planning_context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """保护硬约束并对冲突部分执行一次最小范围的重新规划。"""
+        """保护硬约束并对时间不可行部分执行一次最小范围的重新规划。"""
         repair_messages = [
             {
                 "role": "system",
                 "content": (
-                    "你是企业差旅行程的时间一致性修复器，需要对冲突部分执行最小"
+                    "你是企业差旅行程的时间可行性修复器，需要对问题部分执行最小"
                     "范围的重新规划。必须保护以下硬约束：出发和返程日期、城市顺序、"
                     "固定会议与客户拜访、企业预算和差旅政策、用户明确声明的必须或"
                     "禁止要求，以及上下文中已有的外部查询事实。普通用户偏好属于软"
@@ -316,7 +321,9 @@ JSON 字符串内部出现双引号时必须正确转义。
                     "时间；仍无法解决时，允许调整、缩短、重新排序或删除景点、休闲、"
                     "用餐、休息等非必要活动。不得新增或编造车次、票价、天气、景点"
                     "及其他外部事实。修复后确保同日活动按时间顺序排列且不重叠，活动"
-                    "时间框完整覆盖描述中的交通时刻和耗时。如果现有信息下无法同时"
+                    "时间框完整覆盖描述中的交通时刻和耗时。铁路发车前必须明确保留"
+                    "至少30分钟用于进站、安检、检票和候车；前往车站或用餐不能代替"
+                    "该缓冲。如果现有信息下无法同时"
                     "满足所有硬约束，保留硬约束并将planning_complete设为false，不得"
                     "通过移动固定活动伪造可行性。只输出合法JSON对象。"
                 ),

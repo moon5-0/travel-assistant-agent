@@ -155,7 +155,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             {"type": "json_object"},
         )
         self.assertIn(
-            "活动时间框、描述中的交通时间或耗时、下一项活动开始时间",
+            "活动时间框、描述中的交通时间或耗时、出发前缓冲和下一项活动开始时间",
             model.calls[0]["messages"][0]["content"],
         )
 
@@ -294,6 +294,84 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             model.calls[1]["messages"][0]["content"],
         )
 
+    async def test_missing_train_buffer_triggers_one_targeted_repair(self):
+        conflicting = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [
+                    {
+                        "day": 1,
+                        "date": "2026-08-10",
+                        "activities": [
+                            {
+                                "time": "07:30-08:00",
+                                "location": "苏州市区至苏州北站",
+                                "description": "前往苏州北站。",
+                                "transport": "地铁/出租车",
+                            },
+                            {
+                                "time": "08:00-12:30",
+                                "location": "苏州北站至北京南站",
+                                "description": "乘坐高铁前往北京。",
+                                "transport": "高铁",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        repaired = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [
+                    {
+                        "day": 1,
+                        "date": "2026-08-10",
+                        "activities": [
+                            {
+                                "time": "07:00-07:30",
+                                "location": "苏州市区至苏州北站",
+                                "description": "前往苏州北站。",
+                                "transport": "地铁/出租车",
+                            },
+                            {
+                                "time": "07:30-08:00",
+                                "location": "苏州北站",
+                                "description": "完成安检、检票并候车。",
+                                "transport": "步行",
+                            },
+                            {
+                                "time": "08:00-12:30",
+                                "location": "苏州北站至北京南站",
+                                "description": "乘坐高铁前往北京。",
+                                "transport": "高铁",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        model = FakeModel([conflicting, repaired])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input())
+        result = json.loads(response.content)
+
+        self.assertTrue(result["planning_complete"])
+        self.assertEqual(len(model.calls), 2)
+        self.assertIn(
+            "insufficient_departure_buffer",
+            model.calls[1]["messages"][1]["content"],
+        )
+        self.assertIn(
+            "铁路发车前必须明确保留至少30分钟",
+            model.calls[1]["messages"][0]["content"],
+        )
+
     async def test_failed_time_repair_keeps_original_itinerary(self):
         conflicting = json.dumps({
             "itinerary": {
@@ -330,7 +408,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             "unresolved",
         )
         self.assertIn(
-            "存在未能自动解决的时间冲突",
+            "存在未能自动解决的时间可行性问题",
             result["itinerary"]["notes"][0],
         )
         self.assertEqual(len(model.calls), 2)
@@ -362,9 +440,12 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         result = json.loads(response.content)
 
         self.assertFalse(result["planning_complete"])
-        self.assertEqual(
-            result["time_consistency"]["issues"][0]["category"],
+        self.assertIn(
             "transport_duration_exceeds_activity",
+            {
+                issue["category"]
+                for issue in result["time_consistency"]["issues"]
+            },
         )
         self.assertEqual(len(model.calls), 2)
 
