@@ -130,7 +130,7 @@ def build_execution_summary(
         "total_agent_calls": len(cases) * runs,
         "evaluation_stage": "hard_rules_only",
         "note": (
-            "每次通常调用规划模型1次；格式异常或检测到明确时间冲突时，"
+            "每次通常调用规划模型1次；格式异常或检测到明确时间可行性问题时，"
             "对应修复步骤会各额外调用1次。"
         ),
     }

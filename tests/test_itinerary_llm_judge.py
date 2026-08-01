@@ -203,6 +203,34 @@ class TestLLMItineraryJudge(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["judge_passed"])
         self.assertEqual(len(model.calls), 2)
 
+    async def test_empty_input_placeholder_triggers_full_reevaluation(self):
+        invalid = valid_judge_output()
+        invalid.pop("overall_summary")
+        placeholder = valid_judge_output()
+        for dimension_name in (
+            "time_route_feasibility",
+            "business_personalization",
+            "completeness_usability",
+            "factual_groundedness",
+        ):
+            placeholder[dimension_name]["score"] = 1
+            placeholder[dimension_name]["reason"] = "输入为空，无法评估。"
+        placeholder["overall_summary"] = "输入为空，无法进行行程评价。"
+        model = FakeModel([
+            json.dumps(invalid, ensure_ascii=False),
+            json.dumps(placeholder, ensure_ascii=False),
+            json.dumps(valid_judge_output(), ensure_ascii=False),
+        ])
+        judge = LLMItineraryJudge(model)
+
+        result = await judge.evaluate(self.case, valid_standard_output())
+
+        self.assertTrue(result["judge_passed"])
+        self.assertEqual(len(model.calls), 3)
+        reevaluation_prompt = model.calls[2]["messages"][1]["content"]
+        self.assertIn("【评估材料】", reevaluation_prompt)
+        self.assertIn("上方评估材料并非空白", reevaluation_prompt)
+
 
 class FakeJudge:
     async def evaluate(self, case, itinerary_output):

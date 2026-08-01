@@ -21,6 +21,15 @@ DIMENSION_WEIGHTS = {
 }
 QUALITY_PASS_THRESHOLD = 70.0
 MIN_DIMENSION_SCORE = 3
+INVALID_EVALUATION_MARKERS = (
+    "输入为空",
+    "输入内容为空",
+    "输入文本为空",
+    "无有效输入",
+    "未提供原始评价内容",
+    "未提供待修复内容",
+    "无法进行行程评价",
+)
 
 
 class DimensionEvaluation(BaseModel):
@@ -125,6 +134,30 @@ def score_judge_output(value: Dict[str, Any]) -> Dict[str, Any]:
             and not fatal_errors
         ),
     }
+
+
+def validate_evaluation_substance(scored_result: Dict[str, Any]) -> None:
+    """拒绝结构合法、但实际没有评价行程的占位结果。"""
+    dimensions = scored_result["dimensions"].values()
+    reasons = [dimension["reason"] for dimension in dimensions]
+    placeholder_reasons = sum(
+        any(marker in reason for marker in INVALID_EVALUATION_MARKERS)
+        for reason in reasons
+    )
+    summary = scored_result["overall_summary"]
+    placeholder_summary = any(
+        marker in summary for marker in INVALID_EVALUATION_MARKERS
+    )
+    all_minimum_scores = all(
+        dimension["score"] == 1
+        for dimension in scored_result["dimensions"].values()
+    )
+    if all_minimum_scores and (
+        placeholder_reasons >= 2 or placeholder_summary
+    ):
+        raise ValueError(
+            "Judge returned an empty-input placeholder instead of an evaluation"
+        )
 
 
 def build_evidence_catalog(itinerary_output: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
@@ -240,7 +273,7 @@ semantic_fatal_errors只记录需要语义理解才能发现、且足以令行�
 
 
 class LLMItineraryJudge:
-    """调用Judge模型，并对格式失败只执行一次结构修复。"""
+    """调用Judge模型；结构修复无效时最多重新完整评价一次。"""
 
     def __init__(self, model: Any):
         self.model = model
@@ -259,11 +292,18 @@ class LLMItineraryJudge:
         try:
             return self._parse_and_score(text, parsed_output)
         except Exception as first_error:
-            return await self._repair_once(
-                text,
-                first_error,
-                parsed_output,
-            )
+            try:
+                return await self._repair_once(
+                    text,
+                    first_error,
+                    parsed_output,
+                )
+            except Exception as repair_error:
+                return await self._reevaluate_once(
+                    case,
+                    parsed_output,
+                    repair_error,
+                )
 
     @staticmethod
     def _parse_and_score(
@@ -273,6 +313,7 @@ class LLMItineraryJudge:
         scored = score_judge_output(
             robust_json_parse(text, fallback=None)
         )
+        validate_evaluation_substance(scored)
         validate_evidence_grounding(scored, itinerary_output)
         return scored
 
@@ -316,3 +357,23 @@ class LLMItineraryJudge:
         )
         repaired_text = await extract_json_from_async_response(response)
         return self._parse_and_score(repaired_text, itinerary_output)
+
+    async def _reevaluate_once(
+        self,
+        case: Dict[str, Any],
+        itinerary_output: Dict[str, Any],
+        previous_error: Exception,
+    ) -> Dict[str, Any]:
+        """修复结果仍是占位内容时，携带完整材料重新评价一次。"""
+        messages = build_judge_messages(case, itinerary_output)
+        messages[1]["content"] += (
+            "\n\n【重评提醒】上一次响应未通过校验："
+            f"{previous_error}。上方评估材料并非空白，请重新阅读完整材料并"
+            "给出真实评分；不要输出‘输入为空’或‘未提供内容’等占位评价。"
+        )
+        response = await self.model(
+            messages,
+            response_format={"type": "json_object"},
+        )
+        text = await extract_json_from_async_response(response)
+        return self._parse_and_score(text, itinerary_output)
