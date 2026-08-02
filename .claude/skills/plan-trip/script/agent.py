@@ -19,6 +19,15 @@ from utils.json_parser import robust_json_parse, extract_json_from_async_respons
 from utils.itinerary_time_validator import (
     find_itinerary_time_feasibility_issues,
 )
+from utils.itinerary_fact_validator import (
+    find_unsupported_itinerary_facts,
+)
+from utils.booking_context import (
+    build_booking_context,
+    expected_booking_usage,
+    find_booking_reference_issues,
+    render_booking_references,
+)
 from utils.planning_policy import (
     determine_planning_mode,
     planning_mode_instruction,
@@ -86,6 +95,14 @@ class ItineraryPlanningAgent(AgentBase):
         planning_mode = determine_planning_mode(user_query, all_info)
         all_info["planning_mode"] = planning_mode
         mode_instruction = planning_mode_instruction(planning_mode)
+        event_data = all_info.get("event_collection", {})
+        if not isinstance(event_data, dict):
+            event_data = {}
+        booking_context = build_booking_context(event_data)
+        booking_fact_instruction = self._booking_fact_instruction(
+            event_data,
+            booking_context,
+        )
 
         # 构建用户偏好信息
         preferences_info = ""
@@ -134,6 +151,9 @@ class ItineraryPlanningAgent(AgentBase):
 
 【本次规划模式】
 {mode_instruction}
+
+【预订状态与事实来源】
+{booking_fact_instruction}
 
 【行程完整性硬性要求】
 1. 如果事项信息提供了 duration_days、start_date 或 end_date，daily_plans 必须完整覆盖对应天数和日期，不得少生成或多生成某一天。
@@ -205,6 +225,102 @@ JSON 字符串内部出现双引号时必须正确转义。
                         time_issues,
                     )
 
+            booking_issues = find_booking_reference_issues(
+                result,
+                booking_context,
+            )
+            if booking_issues:
+                logger.warning(
+                    "Invalid booking references detected, attempting one repair: %s",
+                    booking_issues,
+                )
+                try:
+                    result = await self._repair_fact_grounding(
+                        result,
+                        booking_issues,
+                        event_data,
+                        booking_context=booking_context,
+                    )
+                    remaining_booking_issues = find_booking_reference_issues(
+                        result,
+                        booking_context,
+                    )
+                    if remaining_booking_issues:
+                        logger.warning(
+                            "Booking references still invalid after repair: %s",
+                            remaining_booking_issues,
+                        )
+                        result = self._mark_fact_grounding_unresolved(
+                            result,
+                            remaining_booking_issues,
+                        )
+                except Exception as repair_error:
+                    logger.warning(
+                        "Booking reference repair failed; keeping original result: %s",
+                        repair_error,
+                    )
+                    result = self._mark_fact_grounding_unresolved(
+                        result,
+                        booking_issues,
+                    )
+
+            if booking_context:
+                result = render_booking_references(result, booking_context)
+
+            fact_issues = find_unsupported_itinerary_facts(
+                result,
+                event_data,
+            )
+            if fact_issues:
+                logger.warning(
+                    "Unsupported itinerary facts detected, attempting one repair: %s",
+                    fact_issues,
+                )
+                try:
+                    result = await self._repair_fact_grounding(
+                        result,
+                        fact_issues,
+                        event_data,
+                        booking_context=booking_context,
+                    )
+                    post_repair_booking_issues = find_booking_reference_issues(
+                        result,
+                        booking_context,
+                    )
+                    if post_repair_booking_issues:
+                        result = self._mark_fact_grounding_unresolved(
+                            result,
+                            post_repair_booking_issues,
+                        )
+                    if booking_context:
+                        # 修复模型不能成为预订事实的新来源，重新使用原始上下文展开。
+                        result = render_booking_references(
+                            result,
+                            booking_context,
+                        )
+                    remaining_fact_issues = find_unsupported_itinerary_facts(
+                        result,
+                        event_data,
+                    )
+                    if remaining_fact_issues:
+                        logger.warning(
+                            "Itinerary still has unsupported facts after repair: %s",
+                            remaining_fact_issues,
+                        )
+                        result = self._mark_fact_grounding_unresolved(
+                            result,
+                            remaining_fact_issues,
+                        )
+                except Exception as repair_error:
+                    logger.warning(
+                        "Itinerary fact grounding repair failed; keeping original result: %s",
+                        repair_error,
+                    )
+                    result = self._mark_fact_grounding_unresolved(
+                        result,
+                        fact_issues,
+                    )
+
         except Exception as e:
             logger.error(f"Itinerary planning failed: {e}")
             # Ensure text is defined for logging even if extraction failed
@@ -264,6 +380,73 @@ JSON 字符串内部出现双引号时必须正确转义。
                 notes = []
                 itinerary["notes"] = notes
             warning = "存在未能自动解决的时间可行性问题，请调整交通或可选活动后确认。"
+            if warning not in notes:
+                notes.append(warning)
+        return result
+
+    @staticmethod
+    def _booking_fact_instruction(
+        event_data: Dict[str, Any],
+        booking_context: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """根据用户确认状态生成事实使用白名单和参考模式约束。"""
+        confirmed_items = []
+        reference_items = []
+        item_fields = (
+            ("去程交通", "outbound_booking_status", "outbound_booking_details"),
+            ("返程交通", "return_booking_status", "return_booking_details"),
+            ("住宿", "hotel_booking_status", "hotel_booking_details"),
+        )
+        for label, status_field, detail_field in item_fields:
+            if event_data.get(status_field) == "confirmed":
+                confirmed_items.append({
+                    "item": label,
+                    "details": event_data.get(detail_field),
+                })
+            else:
+                reference_items.append(label)
+
+        lines = [
+            "只有下方‘用户确认信息’可以作为已预订事实，必须原样保留，不得擅自修改。",
+            "用户给出的去程和返程时段只是规划范围，不等于真实车次时刻。",
+            f"用户确认信息：{json.dumps(confirmed_items, ensure_ascii=False)}",
+            f"参考规划项目：{json.dumps(reference_items, ensure_ascii=False)}",
+            "【无来源实时事实禁止规则】",
+            "1. 参考规划项目不得生成具体车次、航班号、票价、房价、天气或温度。",
+            "2. 住宿未确认时不得生成具体酒店门店；用户偏好只能作为选型原则。",
+            "3. 不得把参考内容写成已预订、已确认或已安排。",
+            "4. 交通未确认时使用‘根据时间范围选择合适交通’；住宿未确认时使用‘前往之后确定的住宿地点’；返程未确认时使用‘按之后确定的返程安排’。",
+            "5. 可以生成会议、用餐和休息等规划时间段，但不得把这些规划时间冒充实时班次。",
+            "6. 用户已确认的项目不得再写成‘未预订’‘待确认’或‘需要重新购买’，输出前必须逐项核对预订状态。",
+            "【结构化预订引用契约】",
+            f"可信booking_context：{json.dumps(booking_context, ensure_ascii=False)}",
+            f"booking_usage必须等于：{json.dumps(expected_booking_usage(booking_context), ensure_ascii=False)}",
+            "7. 根对象必须输出booking_usage；不得复制或改写可信预订详情。",
+            "8. 使用去程或返程预订的活动必须输出type=transport_booking，并设置booking_ref=outbound或return。",
+            "9. 使用住宿预订的活动必须输出type=hotel_booking，并设置booking_ref=hotel。",
+            "10. 每个confirmed项目必须至少被一个活动引用；reference项目可以不创建活动，但不得生成具体事实。",
+            "11. 预订活动的location、description和transport只写规划意图，系统会根据booking_ref使用原始事实统一渲染。",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _mark_fact_grounding_unresolved(
+        result: Dict[str, Any],
+        issues: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """事实修复失败时显式标记，不能把无来源事实当作可靠结果。"""
+        result["planning_complete"] = False
+        result["fact_grounding"] = {
+            "status": "unresolved",
+            "issues": issues,
+        }
+        itinerary = result.get("itinerary")
+        if isinstance(itinerary, dict):
+            notes = itinerary.get("notes")
+            if not isinstance(notes, list):
+                notes = []
+                itinerary["notes"] = notes
+            warning = "存在未能自动移除的无来源实时事实，请核实后再使用。"
             if warning not in notes:
                 notes.append(warning)
         return result
@@ -334,6 +517,52 @@ JSON 字符串内部出现双引号时必须正确转义。
                     "【原规划上下文】\n"
                     f"{json.dumps(planning_context, ensure_ascii=False, indent=2)}\n\n"
                     "【确定性检查发现的问题】\n"
+                    f"{json.dumps(issues, ensure_ascii=False, indent=2)}\n\n"
+                    "【待修复行程】\n"
+                    f"{json.dumps(original_result, ensure_ascii=False, indent=2)}"
+                ),
+            },
+        ]
+        response = await self.model(
+            repair_messages,
+            response_format={"type": "json_object"},
+        )
+        repaired_text = await extract_json_from_async_response(response)
+        return self._parse_and_validate(repaired_text)
+
+    async def _repair_fact_grounding(
+        self,
+        original_result: Dict[str, Any],
+        issues: List[Dict[str, Any]],
+        event_data: Dict[str, Any],
+        booking_context: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """只移除或弱化无来源实时事实，保护用户确认的预订信息。"""
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是行程事实可靠性修复器。只处理列出的问题，不重新规划"
+                    "日期、城市顺序、固定活动和时间表。用户确认的预订详情必须"
+                    "原样保留；没有用户确认来源的具体车次、航班号、票价、房价、"
+                    "天气、温度以及确认性预订措辞必须删除或改成通用建议。交通"
+                    "未确认时使用时间范围和‘选择合适交通’，住宿未确认时使用"
+                    "‘之后确定的住宿地点’，返程未确认时使用‘按之后确定的返程"
+                    "安排’。用户已确认的项目不得描述为未预订、待确认或需要重新"
+                    "购买。结构化引用问题必须按可信booking_context修正：根对象"
+                    "booking_usage与可信状态一致，交通活动使用type=transport_booking，"
+                    "住宿活动使用type=hotel_booking，并设置合法booking_ref。不得增加"
+                    "任何新的外部事实。只输出合法JSON对象。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "【用户确认与参考状态】\n"
+                    f"{json.dumps(event_data, ensure_ascii=False, indent=2)}\n\n"
+                    "【可信booking_context】\n"
+                    f"{json.dumps(booking_context or {}, ensure_ascii=False, indent=2)}\n\n"
+                    "【需要修复的无来源事实】\n"
                     f"{json.dumps(issues, ensure_ascii=False, indent=2)}\n\n"
                     "【待修复行程】\n"
                     f"{json.dumps(original_result, ensure_ascii=False, indent=2)}"

@@ -81,35 +81,55 @@ result = asyncio.run(plan_trip("规划一下2月27日从上海到北京的路程
 
 ## EventCollectionAgent 输出字段（示例）
 
-- `origin`, `destination`, `start_date`, `end_date`, `duration_days`, `trip_purpose`, `missing_info` 等
+- 基础行程：`origin`, `destination`, `start_date`, `end_date`, `duration_days`, `trip_purpose`
+- 时间范围：`departure_time_window`, `return_time_window`
+- 预订状态：`outbound_booking_status`, `return_booking_status`, `hotel_booking_status`
+- 确认详情：`outbound_booking_details`, `return_booking_details`, `hotel_booking_details`
+- 派生状态：`missing_info`
 
 ## ItineraryPlanningAgent 输出字段（示例）
 
 - `itinerary`: `title`, `duration`, `route`, `daily_plans`, `notes`, `estimated_budget` 等
+- `booking_usage`: 声明去程、返程和住宿使用确认预订还是参考方案
+- 预订相关活动：使用 `type` 和 `booking_ref` 引用可信 `booking_context`
+- `booking_summary`: 由代码根据原始事实生成，不由模型自由改写
 - `planning_complete`: bool
 
 ## 错误与缺失信息
 
 - 若意图解析非 JSON，可提示用户重新描述。
-- 若 `event_data` 含 `missing_info`，可提示用户补全再继续。
+- 协调器先补齐出发地、目的地、日期和行程长度，再询问去返程时段与预订状态。
+- 用户说“时间不限”时，时间范围记为 `flexible`，不能反复追问。
+- 用户没有预订或选择参考方案时，不要求具体车次和酒店详情。
 
 
 ## 行程规划 Prompt 指南
 
 【核心原则】
-1. **永远提供有价值的行程规划**，即使信息不完整
-2. **不要因为缺少天气、交通等细节信息就拒绝规划**
+1. **协调器完成必要澄清后提供有价值的行程规划**
+2. **不要因为缺少天气、具体车次或酒店门店而拒绝参考规划**
 3. **先判断行程目的；企业差旅必须优先满足商务任务，普通旅行再重点安排游览**
-4. 缺失的信息可以在注意事项中提醒用户补充，但不影响主体规划
+4. 用户确认的预订详情必须原样保留；未确认项目只能使用通用表达
 
 【规划策略】
 - 企业差旅：优先安排固定会议、客户拜访、必要交通、工作准备、用餐和休息
 - 用户未要求旅游：不要为了填满时间主动加入景点，也不要虚构会议或客户拜访
 - 用户明确要求适量空闲活动：整段行程最多安排1至2项、每项不超过2小时、靠近商务地点且可取消的休闲活动
 - 普通旅行：根据目的地、日期和用户兴趣安排合理的游览路线
-- 如果缺少出发地：假设从目的地市内出发，规划市内一日游
-- 如果缺少天气信息：根据当前季节给出建议（如冬季建议室内+室外结合）
+- 必要的出发地、日期、去返程时段和预订状态由协调器先询问，不得在规划阶段自行假设
+- 如果缺少天气信息：只给通用的季节性准备建议，不得编造具体天气或温度
 - 如果缺少开放信息：推荐常规开放的景点，提醒提前确认
+
+【预订状态与事实来源】
+- `booking_status=confirmed`：只能使用用户提供的对应详情，并明确说明来自用户已预订信息
+- `booking_status=reference`：不得生成具体车次、航班号、票价、房价、天气、温度和具体酒店门店
+- 规划 Agent可以读取完整 `booking_context` 进行时间和地点编排，但不能复制或修改其中的确定事实
+- 交通预订活动输出 `type=transport_booking`，并使用 `booking_ref=outbound|return`
+- 住宿预订活动输出 `type=hotel_booking`，并使用 `booking_ref=hotel`
+- 根对象输出 `booking_usage`；代码校验引用后使用原始 `booking_context` 统一渲染预订摘要和活动文案
+- 参考交通使用“根据时间范围选择合适交通”，参考住宿使用“前往之后确定的住宿地点”
+- 未确认返程使用“按之后确定的返程安排”，不得写成已经安排或预订
+- 用户偏好只能作为选择原则，不能作为本次预订事实
 
 【行程规划要点】
 1. 根据行程目的控制活动数量；商务差旅不得用景点填满空闲时间
@@ -159,6 +179,13 @@ result = asyncio.run(plan_trip("规划一下2月27日从上海到北京的路程
                         "location": "故宫博物院",
                         "description": "游览故宫，感受皇家建筑群的宏伟...",
                         "transport": "地铁1号线天安门东站"
+                    }},
+                    {{
+                        "time": "15:00-15:30",
+                        "type": "transport_booking",
+                        "booking_ref": "return",
+                        "location": "返程交通",
+                        "description": "按已确认返程安排前往车站"
                     }}
                 ],
                 "meals": {{ "lunch": "...", "dinner": "..." }}
@@ -166,6 +193,11 @@ result = asyncio.run(plan_trip("规划一下2月27日从上海到北京的路程
         ],
         "notes": ["建议提前7天预约故宫门票..."],
         "estimated_budget": "约2000元"
+    }},
+    "booking_usage": {{
+        "outbound": "use_confirmed_booking",
+        "return": "use_confirmed_booking",
+        "hotel": "use_reference_plan"
     }},
     "planning_complete": true
 }}

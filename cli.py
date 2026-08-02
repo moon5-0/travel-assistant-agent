@@ -304,14 +304,26 @@ class AligoCLI:
             # 行程规划
             if agent_name == "itinerary_planning":
                 itinerary = data.get("itinerary")
+                booking_summary = data.get("booking_summary")
                 # 增强：支持从 data.data.itinerary 获取
                 if not itinerary and "data" in data and isinstance(data["data"], dict):
                     itinerary = data["data"].get("itinerary")
+                    booking_summary = data["data"].get("booking_summary")
                 
                 if itinerary:
                     title = itinerary.get('title', '行程规划')
                     self.console.print(f"\n✈️  [bold cyan]{title}[/bold cyan]")
                     self.console.print(f"时长: {itinerary.get('duration', '未知')}\n")
+
+                    # 预订事实由代码根据可信booking_context统一渲染，
+                    # 不直接展示模型可能改写过的车次、时间或酒店描述。
+                    if isinstance(booking_summary, dict) and booking_summary:
+                        self.console.print("[bold]🎫 预订信息[/bold]")
+                        for booking_ref in ("outbound", "return", "hotel"):
+                            summary_item = booking_summary.get(booking_ref)
+                            if isinstance(summary_item, dict) and summary_item.get("text"):
+                                self.console.print(f"  • {summary_item['text']}")
+                        self.console.print()
 
                     # 每日行程
                     for day_plan in itinerary.get("daily_plans", []):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 import unittest
 
 from evaluation.itinerary_quality.hard_rule_evaluator import (
@@ -199,6 +200,45 @@ class TestItineraryHardRuleEvaluator(unittest.TestCase):
 
         self.assertFalse(result["passed"])
         self.assertEqual(result["fatal_errors"], ["output.valid_json"])
+
+    def test_confirmed_booking_requires_structured_usage_and_refs(self):
+        dataset = load_dataset(
+            Path("evaluation/itinerary_quality/fact_grounding_cases.json")
+        )
+        case = next(
+            item for item in dataset["cases"]
+            if item["id"] == "confirmed_transport_and_hotel_preserved"
+        )
+        output = {
+            "itinerary": {
+                "title": "苏州到北京3天行程",
+                "duration": "3天",
+                "route": "苏州 -> 北京 -> 苏州",
+                "daily_plans": [
+                    {
+                        "day": day,
+                        "date": f"2026-08-{9 + day:02d}",
+                        "city": "北京",
+                        "activities": [{
+                            "location": "北京国贸全季酒店",
+                            "description": "G123去程，G456返程，15:30发车",
+                        }],
+                    }
+                    for day in (1, 2, 3)
+                ],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
+        }
+
+        result = evaluate_case(case, output, dataset["global_rules"])
+
+        self.assertIn("booking.references", result["failures"])
+        self.assertIn("booking.references", result["fatal_errors"])
 
 
 if __name__ == "__main__":
