@@ -66,6 +66,7 @@ def make_input(
     trip_purpose=None,
     fixed_events=None,
     planning_signals=None,
+    event_overrides=None,
 ):
     event_data = {
         "origin": "苏州",
@@ -77,6 +78,8 @@ def make_input(
         event_data["trip_purpose"] = trip_purpose
     if fixed_events is not None:
         event_data["fixed_events"] = fixed_events
+    if event_overrides:
+        event_data.update(event_overrides)
     context = {
         "rewritten_query": query,
         "user_preferences": {},
@@ -102,6 +105,205 @@ def make_input(
 
 
 class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
+    async def test_reference_mode_prompt_forbids_unsupported_realtime_facts(self):
+        valid = json.dumps({
+            "itinerary": {
+                "title": "北京参考行程",
+                "duration": "3天",
+                "daily_plans": [],
+                "notes": ["具体交通和住宿请在预订时确认。"],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
+        }, ensure_ascii=False)
+        model = FakeModel([valid])
+        agent = make_agent(model)
+
+        await agent.reply(make_input(event_overrides={
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "reference",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "reference",
+        }))
+        prompt = model.calls[0]["messages"][0]["content"]
+
+        self.assertIn("无来源实时事实禁止规则", prompt)
+        self.assertIn("不得生成具体车次、航班号、票价、房价", prompt)
+        self.assertIn("不得生成具体酒店门店", prompt)
+        self.assertIn("按之后确定的返程安排", prompt)
+
+    async def test_user_confirmed_booking_details_are_allowed_and_preserved(self):
+        valid = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "3天",
+                "daily_plans": [{
+                    "activities": [
+                        {
+                            "type": "transport_booking",
+                            "booking_ref": "outbound",
+                            "description": "模型不负责复制具体车次",
+                        },
+                        {
+                            "type": "hotel_booking",
+                            "booking_ref": "hotel",
+                            "description": "模型不负责复制具体酒店",
+                        },
+                    ],
+                }],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_confirmed_booking",
+                "return": "use_reference_plan",
+                "hotel": "use_confirmed_booking",
+            },
+        }, ensure_ascii=False)
+        model = FakeModel([valid])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input(event_overrides={
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "confirmed",
+            "outbound_booking_details": "G123次列车，08:00发车",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "confirmed",
+            "hotel_booking_details": "北京国贸全季酒店",
+        }))
+        result = json.loads(response.content)
+
+        self.assertTrue(result["planning_complete"])
+        activities = result["itinerary"]["daily_plans"][0]["activities"]
+        self.assertIn("G123", activities[0]["description"])
+        self.assertIn("北京国贸全季酒店", activities[1]["description"])
+        self.assertEqual(
+            result["booking_summary"]["outbound"]["source"],
+            "user_confirmed",
+        )
+        self.assertEqual(len(model.calls), 1)
+
+    async def test_invalid_booking_usage_and_missing_ref_trigger_repair(self):
+        invalid_references = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "3天",
+                "daily_plans": [],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
+        }, ensure_ascii=False)
+        repaired = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "3天",
+                "daily_plans": [{
+                    "activities": [{
+                        "type": "transport_booking",
+                        "booking_ref": "return",
+                        "description": "按固定返程安排",
+                    }],
+                }],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_confirmed_booking",
+                "hotel": "use_reference_plan",
+            },
+        }, ensure_ascii=False)
+        model = FakeModel([invalid_references, repaired])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input(event_overrides={
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "reference",
+            "return_booking_status": "confirmed",
+            "return_booking_details": "G456，8月12日15:30发车",
+            "hotel_booking_status": "reference",
+        }))
+        result = json.loads(response.content)
+
+        self.assertTrue(result["planning_complete"])
+        activity = result["itinerary"]["daily_plans"][0]["activities"][0]
+        self.assertIn("G456", activity["description"])
+        self.assertEqual(
+            result["booking_usage"]["return"],
+            "use_confirmed_booking",
+        )
+        self.assertEqual(len(model.calls), 2)
+        repair_prompt = model.calls[1]["messages"][1]["content"]
+        self.assertIn("booking_usage_mismatch", repair_prompt)
+        self.assertIn("confirmed_booking_not_referenced", repair_prompt)
+        self.assertIn("G456", repair_prompt)
+
+    async def test_unsupported_realtime_facts_trigger_one_grounding_repair(self):
+        unsupported = json.dumps({
+            "itinerary": {
+                "title": "北京参考行程",
+                "duration": "3天",
+                "daily_plans": [],
+                "notes": [
+                    "建议乘坐G123次高铁，二等座票价553元。",
+                    "北京明天气温32℃。",
+                    "已为您预订酒店。",
+                ],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
+        }, ensure_ascii=False)
+        repaired = json.dumps({
+            "itinerary": {
+                "title": "北京参考行程",
+                "duration": "3天",
+                "daily_plans": [],
+                "notes": [
+                    "建议按照上午出发的时间范围选择合适交通。",
+                    "抵达后前往之后确定的住宿地点。",
+                    "具体交通、住宿和天气请在出发前确认。",
+                ],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
+        }, ensure_ascii=False)
+        model = FakeModel([unsupported, repaired])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input(event_overrides={
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "reference",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "reference",
+        }))
+        result = json.loads(response.content)
+
+        self.assertTrue(result["planning_complete"])
+        self.assertNotIn("G123", json.dumps(result, ensure_ascii=False))
+        self.assertEqual(len(model.calls), 2)
+        repair_prompt = model.calls[1]["messages"][1]["content"]
+        self.assertIn("unsupported_transport_identifier", repair_prompt)
+        self.assertIn("unsupported_price", repair_prompt)
+        self.assertIn("unsupported_weather_detail", repair_prompt)
+
     async def test_business_mode_instruction_is_injected_into_prompt(self):
         valid = json.dumps({
             "itinerary": {
@@ -228,6 +430,8 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                             {
                                 "time": "07:00-08:00",
                                 "location": "苏州北站至北京南站",
+                                "type": "transport_booking",
+                                "booking_ref": "outbound",
                                 "description": (
                                     "乘坐G4次高铁（07:00-11:25）前往北京。"
                                 ),
@@ -242,6 +446,11 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                 ],
             },
             "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_confirmed_booking",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
         }, ensure_ascii=False)
         repaired = json.dumps({
             "itinerary": {
@@ -255,6 +464,8 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                             {
                                 "time": "07:00-11:30",
                                 "location": "苏州北站至北京南站",
+                                "type": "transport_booking",
+                                "booking_ref": "outbound",
                                 "description": (
                                     "乘坐G4次高铁（07:00-11:25）前往北京。"
                                 ),
@@ -269,16 +480,26 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                 ],
             },
             "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_confirmed_booking",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
         }, ensure_ascii=False)
         model = FakeModel([conflicting, repaired])
         agent = make_agent(model)
 
-        response = await agent.reply(make_input())
+        response = await agent.reply(make_input(event_overrides={
+            "outbound_booking_status": "confirmed",
+            "outbound_booking_details": "G4次高铁，07:00发车",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "reference",
+        }))
         result = json.loads(response.content)
 
         self.assertEqual(
             result["itinerary"]["daily_plans"][0]["activities"][0]["time"],
-            "07:00-11:30",
+            "07:00出发",
         )
         self.assertEqual(len(model.calls), 2)
         self.assertIn(

@@ -133,9 +133,23 @@ class FakeMemoryManager:
         self.long_term = FakeLongTermMemory()
 
 
+def reference_planning_context():
+    """与测试目标无关时使用的完整参考规划上下文。"""
+    return {
+        "departure_time_window": "上午",
+        "return_time_window": "下午",
+        "outbound_booking_status": "reference",
+        "return_booking_status": "reference",
+        "hotel_booking_status": "reference",
+    }
+
+
 def intention_message(
     schedule,
-    original_user_input: str = "2026年7月24日从苏州前往杭州",
+    original_user_input: str = (
+        "2026年7月24日从苏州前往杭州，上午出发、下午返程，"
+        "交通和酒店都没预订，先看参考方案"
+    ),
     planning_signals=None,
 ):
     """构造协调器实际接收的 IntentionAgent 输出。"""
@@ -166,6 +180,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 "start_date": "2026-08-10",
                 "duration_days": 2,
                 "trip_purpose": "客户沟通",
+                **reference_planning_context(),
                 "missing_info": [],
             },
         )
@@ -188,7 +203,10 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 {"agent_name": "event_collection", "priority": 1},
                 {"agent_name": "itinerary_planning", "priority": 2},
             ],
-            original_user_input="8月10日从苏州去北京两天，办完就回来",
+            original_user_input=(
+                "8月10日从苏州去北京两天，上午出发、下午返程，"
+                "交通和酒店都没预订，办完就回来"
+            ),
             planning_signals=signals,
         ))
 
@@ -209,6 +227,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 "duration_days": 3,
                 # 模拟模型在用户没有说明目的时擅自补成“旅游”。
                 "trip_purpose": "旅游",
+                **reference_planning_context(),
                 "missing_info": [],
             },
         )
@@ -231,7 +250,10 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         response = await orchestrator.reply(
             intention_message(
                 schedule,
-                original_user_input="8月10日从苏州去北京3天",
+                original_user_input=(
+                    "8月10日从苏州去北京3天，上午出发、下午返程，"
+                    "交通和酒店都没预订"
+                ),
             )
         )
         result = json.loads(response.content)
@@ -296,6 +318,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 "start_date": "2026-07-29",
                 "end_date": "2026-07-31",
                 "duration_days": 3,
+                **reference_planning_context(),
                 "missing_info": [],
             },
         )
@@ -317,7 +340,10 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         response = await orchestrator.reply(
             intention_message(
                 schedule,
-                original_user_input="明天从苏州去北京出差3天",
+                original_user_input=(
+                    "明天上午从苏州去北京出差3天，最后一天下午返程，"
+                    "交通和酒店都没预订"
+                ),
             )
         )
         result = json.loads(response.content)
@@ -333,6 +359,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 "destination": "杭州",
                 "start_date": "2026-07-24",
                 "duration_days": 2,
+                **reference_planning_context(),
                 "missing_info": [],
             },
             delay=0.08,
@@ -426,6 +453,310 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         # 信息不完整时，行程规划Agent不应该被调用。
         self.assertIsNone(plan_agent.started_at)
 
+    async def test_complete_core_trip_asks_for_time_and_booking_context(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+
+        response = await orchestrator.reply(intention_message(
+            [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+            original_user_input="8月10日从苏州去北京三天",
+        ))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertEqual(
+            result["missing_fields"],
+            [
+                "departure_time_window",
+                "return_time_window",
+                "outbound_booking_status",
+                "return_booking_status",
+                "hotel_booking_status",
+            ],
+        )
+        self.assertIn("大致去程和返程时段", result["message"])
+        self.assertIn("是否已预订", result["message"])
+        self.assertIsNone(plan_agent.started_at)
+
+    async def test_reference_context_allows_itinerary_planning(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+                "departure_time_window": "上午",
+                "return_time_window": "下午",
+                "outbound_booking_status": "reference",
+                "return_booking_status": "reference",
+                "hotel_booking_status": "reference",
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+
+        response = await orchestrator.reply(intention_message(
+            [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+            original_user_input=(
+                "8月10日从苏州去北京三天，上午出发，最后一天下午返程，"
+                "去程、返程和酒店都没预订，先看参考方案"
+            ),
+        ))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNotNone(plan_agent.started_at)
+
+    async def test_unmentioned_return_time_and_transport_status_are_rejected(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+                "departure_time_window": "上午",
+                # 模拟模型擅自补充用户没说的返程时段和交通状态。
+                "return_time_window": "下午",
+                "outbound_booking_status": "reference",
+                "return_booking_status": "reference",
+                "hotel_booking_status": "confirmed",
+                "hotel_booking_details": "北京国贸全季酒店",
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+
+        response = await orchestrator.reply(intention_message(
+            [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+            original_user_input=(
+                "8月10日上午从苏州出发去北京，"
+                "酒店已经订好北京国贸全季酒店"
+            ),
+        ))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertEqual(
+            result["missing_fields"],
+            [
+                "return_time_window",
+                "outbound_booking_status",
+                "return_booking_status",
+            ],
+        )
+        pending = orchestrator.get_pending_trip()
+        self.assertEqual(pending["departure_time_window"], "上午")
+        self.assertNotIn("return_time_window", pending)
+        self.assertEqual(pending["hotel_booking_status"], "confirmed")
+        self.assertNotIn("outbound_booking_status", pending)
+        self.assertIsNone(plan_agent.started_at)
+
+    async def test_two_tokens_in_one_departure_time_do_not_imply_return_time(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+                "departure_time_window": "上午10点",
+                # 模拟模型把同一个去程时间误当成返程时间依据。
+                "return_time_window": "下午",
+                "outbound_booking_status": "reference",
+                "return_booking_status": "reference",
+                "hotel_booking_status": "reference",
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+
+        response = await orchestrator.reply(intention_message(
+            [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+            original_user_input=(
+                "8月10日上午10点从苏州出发去北京三天，"
+                "车票酒店都没订，先看参考方案"
+            ),
+        ))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertIn("return_time_window", result["missing_fields"])
+        self.assertNotIn(
+            "return_time_window",
+            orchestrator.get_pending_trip(),
+        )
+        self.assertIsNone(plan_agent.started_at)
+
+    async def test_return_booking_statement_does_not_authorize_outbound_status(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "duration_days": 3,
+                "departure_time_window": "上午",
+                "return_time_window": "下午",
+                # 模拟模型根据返程描述擅自补出相同的去程状态。
+                "outbound_booking_status": "reference",
+                "return_booking_status": "reference",
+                "hotel_booking_status": "confirmed",
+                "hotel_booking_details": "北京国贸全季酒店",
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+
+        response = await orchestrator.reply(intention_message(
+            [
+                {"agent_name": "event_collection", "priority": 1},
+                {"agent_name": "itinerary_planning", "priority": 2},
+            ],
+            original_user_input=(
+                "8月10日上午从苏州出发去北京三天，最后一天下午回来，"
+                "返程车票没订，酒店已经订好北京国贸全季酒店"
+            ),
+        ))
+        result = json.loads(response.content)
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertEqual(result["missing_fields"], ["outbound_booking_status"])
+        pending = orchestrator.get_pending_trip()
+        self.assertNotIn("outbound_booking_status", pending)
+        self.assertEqual(pending["return_booking_status"], "reference")
+        self.assertEqual(pending["hotel_booking_status"], "confirmed")
+        self.assertIsNone(plan_agent.started_at)
+
+    async def test_partial_confirmed_booking_context_merges_across_turns(self):
+        event_agent = FakeAgent(
+            "event_collection",
+            payload={
+                "origin": "苏州",
+                "destination": "北京",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "duration_days": 3,
+                "missing_info": [],
+            },
+        )
+        plan_agent = FakeAgent(
+            "itinerary_planning",
+            payload={"itinerary": {"days": []}},
+        )
+        orchestrator = OrchestrationAgent(agent_registry={
+            "event_collection": event_agent,
+            "itinerary_planning": plan_agent,
+        })
+        schedule = [
+            {"agent_name": "event_collection", "priority": 1},
+            {"agent_name": "itinerary_planning", "priority": 2},
+        ]
+
+        first_response = await orchestrator.reply(intention_message(
+            schedule,
+            original_user_input="8月10日从苏州去北京三天",
+        ))
+        self.assertEqual(
+            json.loads(first_response.content)["status"],
+            "needs_clarification",
+        )
+
+        event_agent.payload = {
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "reference",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "confirmed",
+            "hotel_booking_details": "北京国贸全季酒店",
+            "missing_info": [],
+        }
+        second_response = await orchestrator.reply(intention_message(
+            schedule,
+            original_user_input=(
+                "上午出发，最后一天下午返程，车票没订；"
+                "酒店已经订好北京国贸全季酒店"
+            ),
+        ))
+        result = json.loads(second_response.content)
+
+        self.assertEqual(result["status"], "completed")
+        previous_results = plan_agent.received_input["previous_results"]
+        event_data = next(
+            item["result"]["data"]
+            for item in previous_results
+            if item["agent_name"] == "event_collection"
+        )
+        self.assertEqual(event_data["origin"], "苏州")
+        self.assertEqual(event_data["departure_time_window"], "上午")
+        self.assertEqual(event_data["outbound_booking_status"], "reference")
+        self.assertEqual(event_data["hotel_booking_status"], "confirmed")
+        self.assertEqual(
+            event_data["hotel_booking_details"],
+            "北京国贸全季酒店",
+        )
+
     async def test_failed_event_collection_skips_itinerary(self):
         event_agent = FakeAgent(
             "event_collection",
@@ -505,14 +836,19 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
             "start_date": "2026-07-24",
             "end_date": "2026-07-26",
             "duration_days": 3,
+            **reference_planning_context(),
             # EventCollectionAgent 只看本轮输入，因此仍会认为目的地缺失。
             # 调度器合并上一轮“北京”后必须重新计算，不能保留这个旧状态。
             "missing_info": ["destination"],
         }
 
-        second_response = await orchestrator.reply(
-            intention_message(schedule)
-        )
+        second_response = await orchestrator.reply(intention_message(
+            schedule,
+            original_user_input=(
+                "7月24日上午从苏州出发，7月26日下午返程，"
+                "交通和酒店都没预订，先看参考方案"
+            ),
+        ))
         second_result = json.loads(second_response.content)
 
         self.assertEqual(second_result["status"], "completed")
@@ -592,7 +928,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(plan_agent.started_at)
 
-        # 第三轮：补充日期和天数，信息完整。
+        # 第三轮：基础信息完整，但仍应进入时间与预订状态澄清。
         event_agent.payload = {
             "start_date": "2026-07-25",
             "duration_days": 3,
@@ -603,7 +939,31 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         )
         third_result = json.loads(third_response.content)
 
-        self.assertEqual(third_result["status"], "completed")
+        self.assertEqual(third_result["status"], "needs_clarification")
+        self.assertEqual(
+            third_result["missing_fields"],
+            [
+                "departure_time_window",
+                "return_time_window",
+                "outbound_booking_status",
+                "return_booking_status",
+                "hotel_booking_status",
+            ],
+        )
+        self.assertIsNone(plan_agent.started_at)
+
+        # 第四轮：补充时间范围并选择参考方案后才执行规划。
+        event_agent.payload = reference_planning_context()
+        fourth_response = await orchestrator.reply(intention_message(
+            schedule,
+            original_user_input=(
+                "上午出发，最后一天下午返程，交通和酒店都没预订，"
+                "先看参考方案"
+            ),
+        ))
+        fourth_result = json.loads(fourth_response.content)
+
+        self.assertEqual(fourth_result["status"], "completed")
         self.assertIsNotNone(plan_agent.started_at)
 
         # 行程规划完成后，临时状态应该被清空。
@@ -741,6 +1101,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
                 "start_date": "2026-07-14",
                 "end_date": "2026-07-16",
                 "trip_purpose": "出差",
+                **reference_planning_context(),
             },
         )
         plan_agent = FakeAgent(
@@ -764,7 +1125,10 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         response = await orchestrator.reply(
             intention_message(
                 schedule,
-                original_user_input="2026年7月14日从苏州前往杭州出差",
+                original_user_input=(
+                    "2026年7月14日上午从苏州前往杭州出差，"
+                    "7月16日下午返程，交通和酒店都没预订"
+                ),
             )
         )
         result = json.loads(response.content)

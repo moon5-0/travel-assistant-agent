@@ -14,6 +14,11 @@ from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from utils.booking_context import (
+    build_booking_context,
+    find_booking_reference_issues,
+)
+
 
 DEFAULT_CASES_PATH = Path(__file__).with_name("itinerary_quality_cases.json")
 FATAL_TRIP_FIELDS = {
@@ -397,6 +402,20 @@ def evaluate_case(
         expected_value=True,
         actual_value=result.get("planning_complete"),
     )
+
+    booking_context = build_booking_context(case["input"]["trip_info"])
+    if booking_context:
+        booking_reference_issues = find_booking_reference_issues(
+            result,
+            booking_context,
+        )
+        add_check(
+            "booking.references",
+            "booking_grounding",
+            not booking_reference_issues,
+            fatal=True,
+            details=booking_reference_issues or "预订状态与活动引用一致",
+        )
 
     if not isinstance(itinerary, dict):
         failures = [check["id"] for check in checks if not check["passed"]]

@@ -21,6 +21,18 @@ from utils.json_parser import extract_json_from_async_response, robust_json_pars
 
 logger = logging.getLogger(__name__)
 
+BOOKING_STATUS_FIELDS = (
+    "outbound_booking_status",
+    "return_booking_status",
+    "hotel_booking_status",
+)
+BOOKING_DETAIL_FIELDS = (
+    "outbound_booking_details",
+    "return_booking_details",
+    "hotel_booking_details",
+)
+ALLOWED_BOOKING_STATUSES = {"confirmed", "reference"}
+
 
 class EventCollectionAgent(AgentBase):
     """事项收集智能体"""
@@ -90,6 +102,14 @@ class EventCollectionAgent(AgentBase):
 5. duration_days - 行程天数
 6. return_location - 返程地
 7. trip_purpose - 行程目的
+8. departure_time_window - 去程大概时段，例如“上午”“10点前”“flexible”
+9. return_time_window - 返程大概时段，例如“下午”“会议结束后”“flexible”
+10. outbound_booking_status - 去程预订状态，只能是confirmed、reference或null
+11. return_booking_status - 返程预订状态，只能是confirmed、reference或null
+12. hotel_booking_status - 酒店预订状态，只能是confirmed、reference或null
+13. outbound_booking_details - 用户明确提供的已订去程信息，否则为null
+14. return_booking_details - 用户明确提供的已订返程信息，否则为null
+15. hotel_booking_details - 用户明确提供的已订酒店信息，否则为null
 
 【日期处理规则】（重要）
 - 当前时间是{current_date}
@@ -108,6 +128,12 @@ class EventCollectionAgent(AgentBase):
 - 只提取用户明确说出的行程目的，不要根据“规划行程”等表达猜测为旅游或出差
 - 用户没有说明行程目的时，trip_purpose必须设为null
 - trip_purpose是可选字段，值为null时不需要加入missing_info
+- 用户没有明确说明去程或返程的大概时段时，对应time_window必须设为null；“时间不限”“几点都行”统一输出flexible
+- 用户明确说已经预订时，对应booking_status才设为confirmed，并原样提取其提供的详情
+- 用户明确说未预订、不需要推荐或先看参考方案时，对应booking_status设为reference
+- 用户没有说明某一项预订状态时，该booking_status必须设为null，不得自行猜测
+- 酒店品牌偏好、航空偏好和历史偏好不等于已经预订，不得据此设置confirmed
+- booking_status为reference或null时，对应booking_details必须设为null
 
 【输出格式】(严格JSON)
 {{
@@ -118,8 +144,16 @@ class EventCollectionAgent(AgentBase):
     "duration_days": 1,
     "return_location": "北京",
     "trip_purpose": null,
+    "departure_time_window": "上午",
+    "return_time_window": "下午",
+    "outbound_booking_status": "reference",
+    "return_booking_status": "reference",
+    "hotel_booking_status": "confirmed",
+    "outbound_booking_details": null,
+    "return_booking_details": null,
+    "hotel_booking_details": "北京国贸全季酒店",
     "missing_info": [],
-    "extracted_count": 6,
+    "extracted_count": 12,
     "summary": "北京一日游，2月27日"
 }}
 
@@ -127,13 +161,25 @@ class EventCollectionAgent(AgentBase):
 """
 
         try:
-            # 调用模型
-            response = await self.model([
-                {"role": "user", "content": prompt}
-            ])
+            # 实体抽取必须返回结构化对象；JSON mode 能避免长推理后正文为空，
+            # 也与 IntentionAgent、ItineraryPlanningAgent 的调用方式保持一致。
+            response = await self.model(
+                [{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
 
             text = await extract_json_from_async_response(response)
             result = robust_json_parse(text)
+            for status_field, detail_field in zip(
+                BOOKING_STATUS_FIELDS,
+                BOOKING_DETAIL_FIELDS,
+            ):
+                status = result.get(status_field)
+                if status not in ALLOWED_BOOKING_STATUSES:
+                    result[status_field] = None
+                    result[detail_field] = None
+                elif status == "reference":
+                    result[detail_field] = None
         except Exception as e:
             logger.error(f"Event collection failed: {e}")
             result = {

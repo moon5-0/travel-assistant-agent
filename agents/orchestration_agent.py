@@ -43,6 +43,47 @@ TRIP_PURPOSE_REFERENCE_PATTERN = re.compile(
     r"参展|看展|展会|拜访客户|客户拜访|考察|就医|求学|留学|考试|婚礼|赛事)"
 )
 
+TIME_WINDOW_TOKEN_PATTERN = re.compile(
+    r"(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|晚间|"
+    r"\d{1,2}\s*(?::|：|点)\s*\d{0,2}|"
+    r"时间灵活|时间不限|几点都行|什么时候都行|会议结束后)"
+)
+OUTBOUND_DIRECTION_PATTERN = re.compile(
+    r"(?:出发|去程|启程|动身|前往|去往|从.+?去)"
+)
+RETURN_DIRECTION_PATTERN = re.compile(
+    r"(?:返程|返回|回来|回去|返航|回程)"
+)
+BOOKING_ACTION_PATTERN = re.compile(
+    r"(?:已订|已经订|订好|订了|预订了|买好|买了|"
+    r"没订|没有订|未订|尚未订|还没订|"
+    r"没预订|没有预订|未预订|尚未预订|还没预订|还没买|"
+    r"先看参考|参考方案|不需要推荐|不用推荐|无需推荐)"
+)
+TRANSPORT_BOOKING_OBJECT_PATTERN = re.compile(
+    r"(?:交通|车票|机票|去程|返程|高铁|火车|列车|航班|飞机)"
+)
+HOTEL_BOOKING_OBJECT_PATTERN = re.compile(r"(?:酒店|住宿|宾馆)")
+ALL_NOT_BOOKED_PATTERN = re.compile(
+    r"(?:都|全部).{0,5}(?:没订|没有订|未订|没预订|没有预订|未预订)"
+)
+REFERENCE_PLAN_PATTERN = re.compile(
+    r"(?:先看参考|参考方案|不需要推荐|不用推荐|无需推荐)"
+)
+CLAUSE_SPLIT_PATTERN = re.compile(r"[，,。；;\n]+")
+
+BOOKING_STATUS_FIELDS = (
+    "outbound_booking_status",
+    "return_booking_status",
+    "hotel_booking_status",
+)
+BOOKING_DETAIL_FIELDS = (
+    "outbound_booking_details",
+    "return_booking_details",
+    "hotel_booking_details",
+)
+ALLOWED_BOOKING_STATUSES = {"confirmed", "reference"}
+
 
 class OrchestrationAgent(AgentBase):
     """协调器智能体 - 调度和协调多个子智能体"""
@@ -198,12 +239,16 @@ class OrchestrationAgent(AgentBase):
                             field_labels.get(field, field)
                             for field in missing_fields
                         )
+                        clarification_message = self._build_clarification_message(
+                            missing_fields,
+                            default_labels=missing_labels,
+                        )
 
                         final_result = self._aggregate_results(results, intention_data)
                         final_result.update({
                             "status": "needs_clarification",
                             "missing_fields": missing_fields,
-                            "message": f"行程信息不完整，请补充：{missing_labels}",
+                            "message": clarification_message,
                         })
 
                         # 提前返回前，也要保存Priority 1中已经识别成功的偏好。
@@ -261,6 +306,10 @@ class OrchestrationAgent(AgentBase):
             "duration_days",
             "return_location",
             "trip_purpose",
+            "departure_time_window",
+            "return_time_window",
+            *BOOKING_STATUS_FIELDS,
+            *BOOKING_DETAIL_FIELDS,
         )
 
         for item in results:
@@ -291,6 +340,61 @@ class OrchestrationAgent(AgentBase):
             # 本轮没有明确目的时丢弃本轮推断，上一轮已经确认的值仍由合并逻辑保留。
             if not self._has_trip_purpose_reference(original_user_input):
                 current_data["trip_purpose"] = None
+
+            if (
+                not self._pending_trip_data.get("departure_time_window")
+                and not self._has_departure_time_reference(original_user_input)
+            ):
+                current_data["departure_time_window"] = None
+            if (
+                not self._pending_trip_data.get("return_time_window")
+                and not self._has_return_time_reference(original_user_input)
+            ):
+                current_data["return_time_window"] = None
+
+            transport_directions = self._transport_booking_directions(
+                original_user_input
+            )
+            for direction, status_field, detail_field in (
+                (
+                    "outbound",
+                    "outbound_booking_status",
+                    "outbound_booking_details",
+                ),
+                (
+                    "return",
+                    "return_booking_status",
+                    "return_booking_details",
+                ),
+            ):
+                pending_has_booking = any(
+                    self._pending_trip_data.get(field)
+                    for field in (status_field, detail_field)
+                )
+                if not pending_has_booking and direction not in transport_directions:
+                    current_data[status_field] = None
+                    current_data[detail_field] = None
+            pending_has_hotel_booking = any(
+                self._pending_trip_data.get(field)
+                for field in ("hotel_booking_status", "hotel_booking_details")
+            )
+            if (
+                not pending_has_hotel_booking
+                and not self._has_hotel_booking_reference(original_user_input)
+            ):
+                current_data["hotel_booking_status"] = None
+                current_data["hotel_booking_details"] = None
+
+            for status_field, detail_field in zip(
+                BOOKING_STATUS_FIELDS,
+                BOOKING_DETAIL_FIELDS,
+            ):
+                status = current_data.get(status_field)
+                if status not in ALLOWED_BOOKING_STATUSES:
+                    current_data[status_field] = None
+                    continue
+                if status == "reference":
+                    current_data[detail_field] = None
 
             # 先保留上一轮的信息，再使用本轮非空字段覆盖。
             merged_data = dict(self._pending_trip_data)
@@ -362,22 +466,149 @@ class OrchestrationAgent(AgentBase):
         return bool(TRIP_PURPOSE_REFERENCE_PATTERN.search(user_input or ""))
 
     @staticmethod
+    def _has_departure_time_reference(user_input: str) -> bool:
+        """判断用户是否明确提供去程时段。"""
+        text = user_input or ""
+        tokens = TIME_WINDOW_TOKEN_PATTERN.findall(text)
+        if not tokens:
+            return False
+        if not OUTBOUND_DIRECTION_PATTERN.search(text) and not RETURN_DIRECTION_PATTERN.search(text):
+            return tokens[0] in {"时间灵活", "时间不限", "几点都行", "什么时候都行"}
+        return bool(OUTBOUND_DIRECTION_PATTERN.search(text))
+
+    @staticmethod
+    def _has_return_time_reference(user_input: str) -> bool:
+        """判断用户是否明确提供返程时段。"""
+        text = user_input or ""
+        tokens = TIME_WINDOW_TOKEN_PATTERN.findall(text)
+        if not tokens:
+            return False
+        if not OUTBOUND_DIRECTION_PATTERN.search(text) and not RETURN_DIRECTION_PATTERN.search(text):
+            return tokens[0] in {"时间灵活", "时间不限", "几点都行", "什么时候都行"}
+        return bool(RETURN_DIRECTION_PATTERN.search(text))
+
+    @staticmethod
+    def _has_global_reference(user_input: str) -> bool:
+        """判断用户是否要求所有未确认项目都按参考方案处理。"""
+        text = user_input or ""
+        if REFERENCE_PLAN_PATTERN.search(text):
+            return True
+        if not ALL_NOT_BOOKED_PATTERN.search(text):
+            return False
+        has_transport = bool(TRANSPORT_BOOKING_OBJECT_PATTERN.search(text))
+        has_hotel = bool(HOTEL_BOOKING_OBJECT_PATTERN.search(text))
+        # “都没订”可回答上一轮的整体追问；“车票都没订”只说明交通。
+        return has_transport == has_hotel
+
+    @classmethod
+    def _transport_booking_directions(cls, user_input: str) -> set[str]:
+        """按包含预订动作的语句片段，区分去程和返程状态来源。"""
+        text = user_input or ""
+        if cls._has_global_reference(text):
+            return {"outbound", "return"}
+
+        directions: set[str] = set()
+        for clause in CLAUSE_SPLIT_PATTERN.split(text):
+            if not (
+                BOOKING_ACTION_PATTERN.search(clause)
+                and TRANSPORT_BOOKING_OBJECT_PATTERN.search(clause)
+            ):
+                continue
+            has_outbound = bool(OUTBOUND_DIRECTION_PATTERN.search(clause))
+            has_return = bool(RETURN_DIRECTION_PATTERN.search(clause))
+            if has_outbound:
+                directions.add("outbound")
+            if has_return:
+                directions.add("return")
+            if not has_outbound and not has_return:
+                # “车票没订”未区分方向，按去返程交通的整体状态理解。
+                directions.update(("outbound", "return"))
+        return directions
+
+    @staticmethod
+    def _has_hotel_booking_reference(user_input: str) -> bool:
+        """判断用户是否明确说明住宿预订状态或选择整体参考方案。"""
+        text = user_input or ""
+        if OrchestrationAgent._has_global_reference(text):
+            return True
+        return bool(
+            BOOKING_ACTION_PATTERN.search(text)
+            and HOTEL_BOOKING_OBJECT_PATTERN.search(text)
+        )
+
+    @staticmethod
     def _calculate_missing_trip_fields(
         trip_data: Dict[str, Any],
     ) -> List[str]:
-        """基于一份合并后的行程数据，统一计算规划所缺的必填字段。"""
-        missing_fields = []
+        """先检查核心行程，再检查时间范围与预订上下文。"""
+        missing_core_fields = []
 
         # 行程规划需要明确的出发地、目的地和出发日期。
         for field in ("origin", "destination", "start_date"):
             if not trip_data.get(field):
-                missing_fields.append(field)
+                missing_core_fields.append(field)
 
         # duration_days和end_date有一个即可表达行程长度。
         if not trip_data.get("duration_days") and not trip_data.get("end_date"):
-            missing_fields.append("duration_days")
+            missing_core_fields.append("duration_days")
 
-        return missing_fields
+        if missing_core_fields:
+            return missing_core_fields
+
+        missing_context_fields = []
+        for field in ("departure_time_window", "return_time_window"):
+            if not trip_data.get(field):
+                missing_context_fields.append(field)
+
+        for status_field, detail_field in zip(
+            BOOKING_STATUS_FIELDS,
+            BOOKING_DETAIL_FIELDS,
+        ):
+            status = trip_data.get(status_field)
+            if status not in ALLOWED_BOOKING_STATUSES:
+                missing_context_fields.append(status_field)
+            elif status == "confirmed" and not trip_data.get(detail_field):
+                missing_context_fields.append(detail_field)
+
+        return missing_context_fields
+
+    @staticmethod
+    def _build_clarification_message(
+        missing_fields: List[str],
+        default_labels: str,
+    ) -> str:
+        """按澄清阶段生成一条紧凑、可直接回答的问题。"""
+        planning_context_fields = {
+            "departure_time_window",
+            "return_time_window",
+            *BOOKING_STATUS_FIELDS,
+            *BOOKING_DETAIL_FIELDS,
+        }
+        if not planning_context_fields.intersection(missing_fields):
+            return f"行程信息不完整，请补充：{default_labels}"
+
+        missing_time = any(
+            field in missing_fields
+            for field in ("departure_time_window", "return_time_window")
+        )
+        missing_status = any(
+            field in missing_fields for field in BOOKING_STATUS_FIELDS
+        )
+        missing_details = [
+            field for field in BOOKING_DETAIL_FIELDS
+            if field in missing_fields
+        ]
+
+        parts = []
+        if missing_time:
+            parts.append("计划的大致去程和返程时段（时间灵活也可以）")
+        if missing_status:
+            parts.append(
+                "去程、返程和酒店是否已预订；未预订可先生成参考方案"
+            )
+        if missing_details:
+            parts.append("已预订项目的车次、时间或酒店信息")
+        return "行程主体信息已完整，请补充" + "，并说明".join(parts) + "。"
 
     def _prepare_context(self, intention_data: Dict[str, Any]) -> Dict[str, Any]:
         """

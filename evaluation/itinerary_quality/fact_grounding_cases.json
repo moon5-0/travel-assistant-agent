@@ -1,0 +1,167 @@
+{
+  "version": "0.1.0-targeted",
+  "description": "事实可靠性定向案例。与核心10案例分开，验证参考规划不编造实时事实，以及用户确认的预订信息原样保留。",
+  "global_rules": {
+    "unsupported_confirmation_patterns": [
+      "已为您预订",
+      "已预订成功",
+      "余票充足",
+      "价格已确认"
+    ],
+    "minimum_daily_plan_fields": [
+      "day",
+      "date",
+      "city",
+      "activities"
+    ]
+  },
+  "cases": [
+    {
+      "id": "reference_plan_without_realtime_sources",
+      "name": "未预订且无实时来源的参考方案",
+      "input": {
+        "user_query": "2026年8月10日上午从苏州去北京，8月12日下午返回。去程、返程和酒店都没预订，先看参考方案。",
+        "planning_signals": {
+          "trip_type": "personal",
+          "leisure_preference": "requested",
+          "explicit_constraints": [
+            "去程和返程均未预订",
+            "酒店未预订",
+            "只生成参考方案"
+          ]
+        },
+        "trip_info": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-10",
+          "end_date": "2026-08-12",
+          "duration_days": 3,
+          "return_location": "苏州",
+          "departure_time_window": "上午",
+          "return_time_window": "下午",
+          "outbound_booking_status": "reference",
+          "return_booking_status": "reference",
+          "hotel_booking_status": "reference"
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-10",
+          "end_date": "2026-08-12",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "reference_wording",
+            "description": "没有实时来源时应明确使用参考或待确认措辞。",
+            "any_of": [
+              "参考",
+              "以实际为准",
+              "实际预订",
+              "之后确定"
+            ]
+          }
+        ],
+        "forbidden_content": [
+          {
+            "id": "false_booking_confirmation",
+            "description": "参考方案不得声称已经完成交通或住宿预订。",
+            "patterns": [
+              "车票已确认",
+              "酒店已确认",
+              "已为您预订",
+              "已预订成功"
+            ],
+            "fatal": true
+          }
+        ],
+        "judge_focus": [
+          "是否避免生成没有来源的具体车次、航班号、票价、房价和温度",
+          "是否用时间范围和通用交通住宿措辞生成仍然可用的参考方案",
+          "是否清楚区分规划建议与实时事实"
+        ]
+      }
+    },
+    {
+      "id": "confirmed_transport_and_hotel_preserved",
+      "name": "用户已确认交通和酒店",
+      "input": {
+        "user_query": "2026年8月10日从苏州去北京三天。去程已订G123，07:30发车；返程已订G456，8月12日15:30发车；酒店已订北京国贸全季酒店。",
+        "planning_signals": {
+          "trip_type": "personal",
+          "leisure_preference": "requested",
+          "explicit_constraints": [
+            "G123去程不可修改",
+            "G456返程不可修改",
+            "北京国贸全季酒店不可修改"
+          ]
+        },
+        "trip_info": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-10",
+          "end_date": "2026-08-12",
+          "duration_days": 3,
+          "return_location": "苏州",
+          "departure_time_window": "07:30",
+          "return_time_window": "15:30",
+          "outbound_booking_status": "confirmed",
+          "return_booking_status": "confirmed",
+          "hotel_booking_status": "confirmed",
+          "outbound_booking_details": "G123，8月10日07:30发车",
+          "return_booking_details": "G456，8月12日15:30发车",
+          "hotel_booking_details": "北京国贸全季酒店"
+        },
+        "user_preferences": {},
+        "external_information": []
+      },
+      "expected": {
+        "required_trip": {
+          "origin": "苏州",
+          "destination": "北京",
+          "start_date": "2026-08-10",
+          "end_date": "2026-08-12",
+          "duration_days": 3
+        },
+        "required_content": [
+          {
+            "id": "confirmed_outbound_preserved",
+            "description": "必须原样保留用户确认的去程车次和发车时间。",
+            "all_of": [
+              "G123",
+              "07:30"
+            ],
+            "fatal": true
+          },
+          {
+            "id": "confirmed_return_preserved",
+            "description": "必须原样保留用户确认的返程车次和发车时间。",
+            "all_of": [
+              "G456",
+              "15:30"
+            ],
+            "fatal": true
+          },
+          {
+            "id": "confirmed_hotel_preserved",
+            "description": "必须原样保留用户确认的酒店。",
+            "all_of": [
+              "北京国贸全季酒店"
+            ],
+            "fatal": true
+          }
+        ],
+        "forbidden_content": [],
+        "judge_focus": [
+          "确认信息是否原样保留且没有被修复步骤修改",
+          "是否围绕固定发车时间留出合理的进站和通勤缓冲",
+          "是否避免补充用户没有提供的票价、到达时刻和具体天气"
+        ]
+      }
+    }
+  ]
+}
