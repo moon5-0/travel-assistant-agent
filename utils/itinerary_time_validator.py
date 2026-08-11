@@ -13,6 +13,9 @@ TIME_RANGE_PATTERN = re.compile(
     r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)\s*[-—~～至到]\s*"
     r"([01]?\d|2[0-3]):([0-5]\d)(?!\d)"
 )
+DEPARTURE_TIME_PATTERN = re.compile(
+    r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)\s*(?:出发|发车|起飞)"
+)
 HOUR_DURATION_PATTERN = re.compile(
     r"(?:历时|车程|飞行时间|耗时|用时)\s*(?:约|大约|预计)?\s*"
     r"(\d+(?:\.\d+)?)\s*小时(?:\s*(\d+)\s*分钟)?"
@@ -51,6 +54,11 @@ RAIL_TRANSPORT_KEYWORDS = (
 RAIL_BOARDING_PATTERN = re.compile(
     r"乘(?:坐)?[^。；，,]{0,8}(?:高铁|动车|城际列车|火车|列车)"
 )
+RAIL_RECOMMENDATION_PATTERN = re.compile(r"(?:建议|推荐)[^。；，,]{0,8}$")
+RAIL_STATION_LABEL_PATTERN = re.compile(
+    r"^[^至到→>-]{0,20}(?:火车站|高铁站|动车站)(?:（?候车）?)?$"
+)
+RAIL_IDENTIFIER_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:G|D|C)\d{1,5}(?!\d)", re.I)
 DEPARTURE_BUFFER_ACTIVITY_KEYWORDS = (
     "安检",
     "进站",
@@ -67,7 +75,9 @@ TRAVEL_TO_TERMINAL_KEYWORDS = (
     "→",
 )
 EXPLICIT_BUFFER_MINUTES_PATTERN = re.compile(
-    r"预留\s*(?:至少)?\s*(\d+)\s*分钟"
+    # 同时覆盖“预留至少30分钟”和
+    # “预留进站、安检、候车时间（至少30分钟）”。
+    r"预留[^。；，,]{0,30}?(?:至少)?\s*(\d+)\s*分钟"
 )
 # 这是项目采用的保守规划规则，不代表对具体车站检票时间的实时查询结果。
 RAIL_DEPARTURE_BUFFER_MINUTES = 30
@@ -89,6 +99,16 @@ def _parse_primary_range(value: Any) -> Optional[Tuple[int, int]]:
         _to_minutes(match.group(1), match.group(2)),
         _to_minutes(match.group(3), match.group(4)),
     )
+
+
+def _parse_departure_point(value: Any) -> Optional[int]:
+    """解析“07:30出发”这类由可信预订渲染的单点时间。"""
+    if not isinstance(value, str):
+        return None
+    match = DEPARTURE_TIME_PATTERN.search(value)
+    if not match:
+        return None
+    return _to_minutes(match.group(1), match.group(2))
 
 
 def _find_ranges(value: Any) -> List[Tuple[int, int, str]]:
@@ -141,14 +161,38 @@ def _required_departure_buffer_minutes(
     """返回固定班次交通的规划缓冲；当前仅覆盖评估确认的铁路场景。"""
     transport = str(activity.get("transport", ""))
     description = str(activity.get("description", ""))
-    if any(keyword in transport for keyword in RAIL_TRANSPORT_KEYWORDS):
-        return RAIL_DEPARTURE_BUFFER_MINUTES
-    if any(
+    description_is_buffer = any(
         keyword in description
         for keyword in DEPARTURE_BUFFER_ACTIVITY_KEYWORDS
-    ):
+    )
+    boarding_match = RAIL_BOARDING_PATTERN.search(description)
+    boarding_prefix = (
+        description[max(0, boarding_match.start() - 10):boarding_match.start()]
+        if boarding_match
+        else ""
+    )
+    description_boards_rail = bool(
+        boarding_match
+        and not RAIL_RECOMMENDATION_PATTERN.search(boarding_prefix)
+    )
+    transport_is_station_label = bool(
+        RAIL_STATION_LABEL_PATTERN.fullmatch(transport.strip())
+    )
+    transport_is_rail_trip = bool(
+        not transport_is_station_label
+        and (
+            any(keyword in transport for keyword in RAIL_TRANSPORT_KEYWORDS)
+            or RAIL_IDENTIFIER_PATTERN.search(transport)
+        )
+    )
+
+    # “杭州火车站”可能只是候车活动的地点/交通说明，不能仅凭
+    # “火车”二字把这段缓冲时间再次识别成铁路行程。
+    if description_is_buffer:
+        if transport_is_rail_trip or description_boards_rail:
+            return RAIL_DEPARTURE_BUFFER_MINUTES
         return None
-    if RAIL_BOARDING_PATTERN.search(description):
+    if transport_is_rail_trip or description_boards_rail:
         return RAIL_DEPARTURE_BUFFER_MINUTES
     return None
 
@@ -223,11 +267,21 @@ def find_itinerary_time_feasibility_issues(
                 continue
             slot_text = activity.get("time")
             slot = _parse_primary_range(slot_text)
-            if slot is None:
+            departure_point = (
+                _parse_departure_point(slot_text)
+                if slot is None
+                else None
+            )
+            if slot is None and departure_point is None:
                 continue
-            slot_start, slot_end = slot
+            is_departure_point = slot is None
+            if is_departure_point:
+                slot_start = departure_point
+                slot_end = departure_point
+            else:
+                slot_start, slot_end = slot
 
-            if slot_end <= slot_start:
+            if not is_departure_point and slot_end <= slot_start:
                 issues.append(_issue(
                     "invalid_time_range",
                     day_index,
@@ -335,9 +389,16 @@ def find_itinerary_time_feasibility_issues(
                     ),
                 ))
 
-            previous_range = slot
-            previous_index = activity_index
-            previous_activity = activity
+            if is_departure_point:
+                # 只知道发车时间，不猜测到达时间，因此不将它
+                # 作为后续活动的完整时间区间。
+                previous_range = None
+                previous_index = None
+                previous_activity = None
+            else:
+                previous_range = slot
+                previous_index = activity_index
+                previous_activity = activity
 
     return issues
 

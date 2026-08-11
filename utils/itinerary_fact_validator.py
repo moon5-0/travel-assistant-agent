@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 TRANSPORT_IDENTIFIER_PATTERN = re.compile(
@@ -76,9 +76,32 @@ def _add_issue(
     })
 
 
+def _trusted_price_values(value: Any, parent_key: str = "") -> Set[str]:
+    """提取用户输入、企业政策或外部查询中明确给出的价格/预算数字。"""
+    values: Set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            values.update(_trusted_price_values(child, str(key)))
+        return values
+    if isinstance(value, list):
+        for child in value:
+            values.update(_trusted_price_values(child, parent_key))
+        return values
+
+    key = parent_key.lower()
+    if any(token in key for token in ("budget", "price", "fare", "cost")):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.add(str(value).rstrip("0").rstrip(".") if isinstance(value, float) else str(value))
+        elif isinstance(value, str):
+            values.update(re.findall(r"\d+(?:\.\d+)?", value))
+    return values
+
+
 def find_unsupported_itinerary_facts(
     itinerary_result: Dict[str, Any],
     event_data: Dict[str, Any],
+    *,
+    trusted_context: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """返回无用户确认来源的车次、价格、温度和确认性预订措辞。"""
     itinerary = itinerary_result.get("itinerary", {})
@@ -100,6 +123,7 @@ def find_unsupported_itinerary_facts(
         transport_details,
         _detail_text(event_data, "hotel_booking_details"),
     )))
+    trusted_prices = _trusted_price_values(trusted_context or event_data)
 
     issues: List[Dict[str, Any]] = []
     for path, text in _iter_text_values(itinerary):
@@ -117,7 +141,11 @@ def find_unsupported_itinerary_facts(
         for match in PRICE_PATTERN.finditer(text):
             price_match = PRICE_VALUE_PATTERN.search(match.group(0))
             price = price_match.group(0) if price_match else match.group(0)
-            if price not in all_confirmed_details:
+            numeric_price = "".join(re.findall(r"\d+(?:\.\d+)?", price))
+            if (
+                price not in all_confirmed_details
+                and numeric_price not in trusted_prices
+            ):
                 _add_issue(
                     issues,
                     "unsupported_price",

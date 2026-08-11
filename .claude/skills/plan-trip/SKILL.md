@@ -130,6 +130,13 @@ result = asyncio.run(plan_trip("规划一下2月27日从上海到北京的路程
 - 参考交通使用“根据时间范围选择合适交通”，参考住宿使用“前往之后确定的住宿地点”
 - 未确认返程使用“按之后确定的返程安排”，不得写成已经安排或预订
 - 用户偏好只能作为选择原则，不能作为本次预订事实
+- 去程和返程只要存在于 `booking_context`，无论确认还是参考状态，都必须各有一个对应 `booking_ref` 活动
+
+【最小结构化活动字段】
+- 每个活动必须包含 `type` 和 `time`，并且 `title`、`location`、`description` 至少一个非空
+- `type` 只使用：`general`、`transport_booking`、`hotel_booking`、`fixed_event`、`business`、`meal`、`leisure`、`buffer`、`local_transport`
+- `time` 为明确范围时，同时输出 `start_time` 和 `end_time`；模糊时段保留 `上午`、`下午` 或 `flexible`
+- 固定事项使用 `type=fixed_event` 和 `fixed_event_ref=<event_id>`，不要复制或改写原固定事项
 
 【行程规划要点】
 1. 根据行程目的控制活动数量；商务差旅不得用景点填满空闲时间
@@ -176,12 +183,17 @@ result = asyncio.run(plan_trip("规划一下2月27日从上海到北京的路程
                 "activities": [
                     {{
                         "time": "09:00-12:00",
+                        "start_time": "09:00",
+                        "end_time": "12:00",
+                        "type": "general",
                         "location": "故宫博物院",
                         "description": "游览故宫，感受皇家建筑群的宏伟...",
                         "transport": "地铁1号线天安门东站"
                     }},
                     {{
                         "time": "15:00-15:30",
+                        "start_time": "15:00",
+                        "end_time": "15:30",
                         "type": "transport_booking",
                         "booking_ref": "return",
                         "location": "返程交通",
