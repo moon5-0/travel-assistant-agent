@@ -61,8 +61,41 @@ def make_agent(model):
     return agent
 
 
+def complete_daily_plans(activities=None):
+    return [{
+        "day": 1,
+        "date": "2026-08-10",
+        "city": "北京",
+        "activities": activities or [{
+            "time": "09:00-10:00",
+            "location": "苏州至北京",
+            "description": "从苏州前往北京并开始行程。",
+            "transport": "待确认",
+        }],
+    }]
+
+
+def reference_transport_activity(booking_ref):
+    return {
+        "time": "上午" if booking_ref == "outbound" else "下午",
+        "type": "transport_booking",
+        "booking_ref": booking_ref,
+        "location": "去程交通" if booking_ref == "outbound" else "返程交通",
+        "description": "根据时间范围选择合适交通。",
+        "transport": "待确认",
+    }
+
+
+def complete_reference_activities(extra=None):
+    return [
+        reference_transport_activity("outbound"),
+        *(extra or []),
+        reference_transport_activity("return"),
+    ]
+
+
 def make_input(
-    query="2026年8月10日从苏州去北京3天",
+    query="2026年8月10日从苏州去北京1天",
     trip_purpose=None,
     fixed_events=None,
     planning_signals=None,
@@ -72,7 +105,8 @@ def make_input(
         "origin": "苏州",
         "destination": "北京",
         "start_date": "2026-08-10",
-        "duration_days": 3,
+        "end_date": "2026-08-10",
+        "duration_days": 1,
     }
     if trip_purpose is not None:
         event_data["trip_purpose"] = trip_purpose
@@ -109,8 +143,9 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         valid = json.dumps({
             "itinerary": {
                 "title": "北京参考行程",
-                "duration": "3天",
-                "daily_plans": [],
+                "duration": "1天",
+                "route": "苏州 -> 北京",
+                "daily_plans": complete_daily_plans(complete_reference_activities()),
                 "notes": ["具体交通和住宿请在预订时确认。"],
             },
             "planning_complete": True,
@@ -137,13 +172,78 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不得生成具体酒店门店", prompt)
         self.assertIn("按之后确定的返程安排", prompt)
 
+    async def test_reference_booking_is_normalized_before_final_time_check(self):
+        draft_with_temporary_schedule = json.dumps({
+            "itinerary": {
+                "title": "北京参考行程",
+                "duration": "1天",
+                "route": "苏州 -> 北京",
+                "daily_plans": [{
+                    "day": 1,
+                    "date": "2026-08-10",
+                    "city": "北京",
+                    "activities": [
+                        {
+                            "time": "08:30-09:00",
+                            "location": "苏州火车站",
+                            "description": "提前抵达车站，办理进站、安检和候车。",
+                            "transport": "地铁或打车前往苏州站",
+                        },
+                        {
+                            "time": "09:00-13:00",
+                            "type": "transport_booking",
+                            "booking_ref": "outbound",
+                            "location": "高铁上",
+                            "description": "乘坐高铁前往北京。",
+                            "transport": "高铁",
+                        },
+                        reference_transport_activity("return"),
+                    ],
+                }],
+            },
+            "planning_complete": True,
+            "booking_usage": {
+                "outbound": "use_reference_plan",
+                "return": "use_reference_plan",
+                "hotel": "use_reference_plan",
+            },
+        }, ensure_ascii=False)
+        model = FakeModel([draft_with_temporary_schedule])
+        agent = make_agent(model)
+
+        response = await agent.reply(make_input(event_overrides={
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "reference",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "reference",
+        }))
+        result = json.loads(response.content)
+
+        self.assertTrue(result["planning_complete"])
+        self.assertNotIn("time_consistency", result)
+        self.assertEqual(len(model.calls), 1)
+        outbound = result["itinerary"]["daily_plans"][0]["activities"][1]
+        self.assertEqual(outbound["time"], "上午")
+        self.assertEqual(outbound["transport"], "待确认")
+
     async def test_user_confirmed_booking_details_are_allowed_and_preserved(self):
         valid = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
-                "duration": "3天",
+                "duration": "1天",
+                "route": "苏州 -> 北京",
                 "daily_plans": [{
+                    "day": 1,
+                    "date": "2026-08-10",
+                    "city": "北京",
                     "activities": [
+                        {
+                            "time": "07:30-08:00",
+                            "location": "苏州北站",
+                            "description": "完成进站、安检、检票并候车。",
+                            "transport": "步行",
+                        },
                         {
                             "type": "transport_booking",
                             "booking_ref": "outbound",
@@ -152,8 +252,10 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                         {
                             "type": "hotel_booking",
                             "booking_ref": "hotel",
+                            "time": "抵达后",
                             "description": "模型不负责复制具体酒店",
                         },
+                        reference_transport_activity("return"),
                     ],
                 }],
             },
@@ -180,8 +282,8 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["planning_complete"])
         activities = result["itinerary"]["daily_plans"][0]["activities"]
-        self.assertIn("G123", activities[0]["description"])
-        self.assertIn("北京国贸全季酒店", activities[1]["description"])
+        self.assertIn("G123", activities[1]["description"])
+        self.assertIn("北京国贸全季酒店", activities[2]["description"])
         self.assertEqual(
             result["booking_summary"]["outbound"]["source"],
             "user_confirmed",
@@ -192,8 +294,9 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         invalid_references = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
-                "duration": "3天",
-                "daily_plans": [],
+                "duration": "1天",
+                "route": "苏州 -> 北京",
+                "daily_plans": complete_daily_plans(),
             },
             "planning_complete": True,
             "booking_usage": {
@@ -205,13 +308,31 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         repaired = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
-                "duration": "3天",
+                "duration": "1天",
+                "route": "苏州 -> 北京",
                 "daily_plans": [{
-                    "activities": [{
-                        "type": "transport_booking",
-                        "booking_ref": "return",
-                        "description": "按固定返程安排",
-                    }],
+                    "day": 1,
+                    "date": "2026-08-10",
+                    "city": "北京",
+                    "activities": [
+                        {
+                            "type": "transport_booking",
+                            "booking_ref": "outbound",
+                            "time": "上午",
+                            "description": "根据上午时段选择去程交通",
+                        },
+                        {
+                            "time": "15:00-15:30",
+                            "location": "北京南站",
+                            "description": "完成进站、安检、检票并候车。",
+                            "transport": "步行",
+                        },
+                        {
+                            "type": "transport_booking",
+                            "booking_ref": "return",
+                            "description": "按固定返程安排",
+                        },
+                    ],
                 }],
             },
             "planning_complete": True,
@@ -235,7 +356,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         result = json.loads(response.content)
 
         self.assertTrue(result["planning_complete"])
-        activity = result["itinerary"]["daily_plans"][0]["activities"][0]
+        activity = result["itinerary"]["daily_plans"][0]["activities"][2]
         self.assertIn("G456", activity["description"])
         self.assertEqual(
             result["booking_usage"]["return"],
@@ -243,16 +364,17 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(model.calls), 2)
         repair_prompt = model.calls[1]["messages"][1]["content"]
-        self.assertIn("booking_usage_mismatch", repair_prompt)
+        self.assertNotIn("booking_usage_mismatch", repair_prompt)
         self.assertIn("confirmed_booking_not_referenced", repair_prompt)
         self.assertIn("G456", repair_prompt)
 
-    async def test_unsupported_realtime_facts_trigger_one_grounding_repair(self):
+    async def test_unsupported_realtime_facts_are_left_to_llm_judge(self):
         unsupported = json.dumps({
             "itinerary": {
                 "title": "北京参考行程",
-                "duration": "3天",
-                "daily_plans": [],
+                "duration": "1天",
+                "route": "苏州 -> 北京",
+                "daily_plans": complete_daily_plans(complete_reference_activities()),
                 "notes": [
                     "建议乘坐G123次高铁，二等座票价553元。",
                     "北京明天气温32℃。",
@@ -266,25 +388,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                 "hotel": "use_reference_plan",
             },
         }, ensure_ascii=False)
-        repaired = json.dumps({
-            "itinerary": {
-                "title": "北京参考行程",
-                "duration": "3天",
-                "daily_plans": [],
-                "notes": [
-                    "建议按照上午出发的时间范围选择合适交通。",
-                    "抵达后前往之后确定的住宿地点。",
-                    "具体交通、住宿和天气请在出发前确认。",
-                ],
-            },
-            "planning_complete": True,
-            "booking_usage": {
-                "outbound": "use_reference_plan",
-                "return": "use_reference_plan",
-                "hotel": "use_reference_plan",
-            },
-        }, ensure_ascii=False)
-        model = FakeModel([unsupported, repaired])
+        model = FakeModel([unsupported])
         agent = make_agent(model)
 
         response = await agent.reply(make_input(event_overrides={
@@ -297,19 +401,16 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         result = json.loads(response.content)
 
         self.assertTrue(result["planning_complete"])
-        self.assertNotIn("G123", json.dumps(result, ensure_ascii=False))
-        self.assertEqual(len(model.calls), 2)
-        repair_prompt = model.calls[1]["messages"][1]["content"]
-        self.assertIn("unsupported_transport_identifier", repair_prompt)
-        self.assertIn("unsupported_price", repair_prompt)
-        self.assertIn("unsupported_weather_detail", repair_prompt)
+        self.assertIn("G123", json.dumps(result, ensure_ascii=False))
+        self.assertEqual(len(model.calls), 1)
 
     async def test_business_mode_instruction_is_injected_into_prompt(self):
         valid = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
-                "duration": "3天",
-                "daily_plans": [],
+                "duration": "1天",
+                "route": "苏州 -> 北京",
+                "daily_plans": complete_daily_plans(),
             },
             "planning_complete": True,
         }, ensure_ascii=False)
@@ -339,8 +440,9 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         valid = json.dumps({
             "itinerary": {
                 "title": "北京3日游",
-                "duration": "3天",
-                "daily_plans": [],
+                "duration": "1天",
+                "route": "苏州 -> 北京",
+                "daily_plans": complete_daily_plans(),
             },
             "planning_complete": True,
         }, ensure_ascii=False)
@@ -376,12 +478,20 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         repaired = json.dumps({
             "itinerary": {
                 "title": "北京3日游",
-                "duration": "3天",
+                "duration": "1天",
+                "route": "苏州 -> 北京",
                 "daily_plans": [
                     {
                         "day": 1,
+                        "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
-                            {"description": "参观故宫"},
+                            {
+                                "time": "09:00-11:00",
+                                "type": "general",
+                                "location": "故宫",
+                                "description": "参观故宫",
+                            },
                         ],
                     }
                 ],
@@ -417,7 +527,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result)
         self.assertEqual(len(model.calls), 2)
 
-    async def test_time_conflict_triggers_one_targeted_repair(self):
+    async def test_confirmed_departure_without_buffer_is_recorded_as_warning(self):
         conflicting = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
@@ -426,6 +536,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                     {
                         "day": 1,
                         "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
                             {
                                 "time": "07:00-08:00",
@@ -441,6 +552,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                                 "location": "酒店",
                                 "description": "办理入住。",
                             },
+                            reference_transport_activity("return"),
                         ],
                     }
                 ],
@@ -460,7 +572,14 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                     {
                         "day": 1,
                         "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
+                            {
+                                "time": "06:30-07:00",
+                                "location": "苏州北站",
+                                "description": "完成进站、安检、检票并候车。",
+                                "transport": "步行",
+                            },
                             {
                                 "time": "07:00-11:30",
                                 "location": "苏州北站至北京南站",
@@ -501,21 +620,10 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             result["itinerary"]["daily_plans"][0]["activities"][0]["time"],
             "07:00出发",
         )
-        self.assertEqual(len(model.calls), 2)
-        self.assertIn(
-            "transport_time_outside_activity",
-            model.calls[1]["messages"][1]["content"],
-        )
-        self.assertIn(
-            "允许调整、缩短、重新排序或删除",
-            model.calls[1]["messages"][0]["content"],
-        )
-        self.assertIn(
-            "普通用户偏好属于软约束",
-            model.calls[1]["messages"][0]["content"],
-        )
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(result["quality_gate"]["status"], "passed")
 
-    async def test_missing_train_buffer_triggers_one_targeted_repair(self):
+    async def test_missing_train_buffer_does_not_block_delivery(self):
         conflicting = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
@@ -524,6 +632,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                     {
                         "day": 1,
                         "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
                             {
                                 "time": "07:30-08:00",
@@ -551,6 +660,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                     {
                         "day": 1,
                         "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
                             {
                                 "time": "07:00-07:30",
@@ -583,17 +693,10 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
         result = json.loads(response.content)
 
         self.assertTrue(result["planning_complete"])
-        self.assertEqual(len(model.calls), 2)
-        self.assertIn(
-            "insufficient_departure_buffer",
-            model.calls[1]["messages"][1]["content"],
-        )
-        self.assertIn(
-            "铁路发车前必须明确保留至少30分钟",
-            model.calls[1]["messages"][0]["content"],
-        )
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(result["quality_gate"]["status"], "passed")
 
-    async def test_failed_time_repair_keeps_original_itinerary(self):
+    async def test_deterministic_time_issue_triggers_one_repair(self):
         conflicting = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
@@ -601,6 +704,8 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                 "daily_plans": [
                     {
                         "day": 1,
+                        "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
                             {
                                 "time": "09:00-10:00",
@@ -613,28 +718,39 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             },
             "planning_complete": True,
         }, ensure_ascii=False)
-        model = FakeModel([conflicting, "{invalid"])
+        repaired = json.dumps({
+            "itinerary": {
+                "title": "北京商务行程",
+                "duration": "1天",
+                "daily_plans": [{
+                    "day": 1,
+                    "date": "2026-08-10",
+                    "city": "北京",
+                    "activities": [{
+                        "time": "09:00-11:00",
+                        "type": "general",
+                        "location": "宁波站至苏州站",
+                        "description": "乘坐高铁，车程约2小时。",
+                    }],
+                }],
+            },
+            "planning_complete": True,
+        }, ensure_ascii=False)
+        model = FakeModel([conflicting, repaired])
         agent = make_agent(model)
 
         response = await agent.reply(make_input())
         result = json.loads(response.content)
 
-        self.assertFalse(result["planning_complete"])
+        self.assertTrue(result["planning_complete"])
+        self.assertTrue(result["planning_complete"])
         self.assertEqual(
             result["itinerary"]["daily_plans"][0]["activities"][0]["time"],
-            "09:00-10:00",
-        )
-        self.assertEqual(
-            result["time_consistency"]["status"],
-            "unresolved",
-        )
-        self.assertIn(
-            "存在未能自动解决的时间可行性问题",
-            result["itinerary"]["notes"][0],
+            "09:00-11:00",
         )
         self.assertEqual(len(model.calls), 2)
 
-    async def test_remaining_conflict_after_repair_is_marked_unresolved(self):
+    async def test_remaining_time_conflict_blocks_delivery(self):
         conflicting = json.dumps({
             "itinerary": {
                 "title": "北京商务行程",
@@ -642,6 +758,8 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
                 "daily_plans": [
                     {
                         "day": 1,
+                        "date": "2026-08-10",
+                        "city": "北京",
                         "activities": [
                             {
                                 "time": "09:00-10:00",
@@ -665,7 +783,7 @@ class TestItineraryPlanningAgentOffline(unittest.IsolatedAsyncioTestCase):
             "transport_duration_exceeds_activity",
             {
                 issue["category"]
-                for issue in result["time_consistency"]["issues"]
+                for issue in result["quality_gate"]["blocking_issues"]
             },
         )
         self.assertEqual(len(model.calls), 2)

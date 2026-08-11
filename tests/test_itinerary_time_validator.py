@@ -295,6 +295,67 @@ class TestItineraryTimeValidator(unittest.TestCase):
             [],
         )
 
+    def test_confirmed_train_departure_point_uses_previous_station_buffer(self):
+        result = make_result([
+            {
+                "time": "07:00-07:30",
+                "location": "苏州北站",
+                "description": "完成进站、安检、检票并候车。",
+                "transport": "步行",
+            },
+            {
+                "time": "07:30出发",
+                "type": "transport_booking",
+                "booking_ref": "outbound",
+                "description": "按用户确认的预订出行：G123，07:30发车",
+                "transport": "G123，07:30发车",
+            },
+        ])
+
+        self.assertEqual(
+            find_itinerary_time_feasibility_issues(result),
+            [],
+        )
+
+    def test_transfer_slot_with_explicit_buffer_minutes_is_accepted(self):
+        result = make_result([
+            {
+                "time": "14:30-15:30",
+                "location": "返程车站",
+                "description": (
+                    "前往返程车站，预留进站、安检、检票和候车时间"
+                    "（至少30分钟）。"
+                ),
+                "transport": "地铁/出租车",
+            },
+            {
+                "time": "15:30出发",
+                "type": "transport_booking",
+                "booking_ref": "return",
+                "description": "按用户确认的预订出行：G456，15:30发车",
+                "transport": "G456，15:30发车",
+            },
+        ])
+
+        self.assertEqual(
+            find_itinerary_time_feasibility_issues(result),
+            [],
+        )
+
+    def test_confirmed_train_departure_point_requires_station_buffer(self):
+        result = make_result([{
+            "time": "07:30出发",
+            "type": "transport_booking",
+            "booking_ref": "outbound",
+            "description": "按用户确认的预订出行：G123，07:30发车",
+            "transport": "G123，07:30发车",
+        }])
+
+        issues = find_itinerary_time_feasibility_issues(result)
+
+        self.assertEqual(issues[0]["category"], "insufficient_departure_buffer")
+        self.assertEqual(issues[0]["actual_buffer_minutes"], 0)
+
     def test_buffer_activity_may_mention_recommended_train(self):
         result = make_result([
             {
@@ -324,6 +385,41 @@ class TestItineraryTimeValidator(unittest.TestCase):
             find_itinerary_time_feasibility_issues(result),
             [],
         )
+
+    def test_station_transport_label_does_not_turn_buffer_into_train_trip(self):
+        result = make_result([
+            {
+                "time": "08:30-09:00",
+                "location": "杭州东站",
+                "description": "进站、安检、检票和候车（铁路发车前预留30分钟）。",
+                "transport": "杭州火车站",
+            },
+            {
+                "time": "09:00-11:00",
+                "location": "杭州东站至宁波站",
+                "description": "乘坐高铁前往宁波。",
+                "transport": "高铁",
+            },
+        ])
+
+        self.assertEqual(
+            find_itinerary_time_feasibility_issues(result),
+            [],
+        )
+
+    def test_actual_train_trip_with_buffer_words_still_requires_buffer(self):
+        result = make_result([
+            {
+                "time": "09:00-11:00",
+                "location": "杭州东站至宁波站",
+                "description": "乘坐高铁前往宁波，出发前需安检并候车。",
+                "transport": "高铁",
+            },
+        ])
+
+        issues = find_itinerary_time_feasibility_issues(result)
+
+        self.assertEqual(issues[0]["category"], "insufficient_departure_buffer")
 
     def test_does_not_apply_train_buffer_to_local_transport(self):
         result = make_result([

@@ -15,9 +15,9 @@ from utils.json_parser import (
 
 DIMENSION_WEIGHTS = {
     "time_route_feasibility": 35,
-    "business_personalization": 30,
+    "business_personalization": 25,
     "completeness_usability": 20,
-    "factual_groundedness": 15,
+    "factual_groundedness": 20,
 }
 QUALITY_PASS_THRESHOLD = 70.0
 MIN_DIMENSION_SCORE = 3
@@ -27,8 +27,17 @@ INVALID_EVALUATION_MARKERS = (
     "输入文本为空",
     "无有效输入",
     "未提供原始评价内容",
+    "未提供原始行程评价信息",
+    "未提供行程评价内容",
     "未提供待修复内容",
     "无法进行行程评价",
+    "无法给出具体总结",
+    "原始内容缺失",
+    "原始内容为空",
+    "默认最低分",
+    "no content to repair",
+    "no input content to repair",
+    "no evaluation content",
 )
 
 
@@ -139,12 +148,12 @@ def score_judge_output(value: Dict[str, Any]) -> Dict[str, Any]:
 def validate_evaluation_substance(scored_result: Dict[str, Any]) -> None:
     """拒绝结构合法、但实际没有评价行程的占位结果。"""
     dimensions = scored_result["dimensions"].values()
-    reasons = [dimension["reason"] for dimension in dimensions]
+    reasons = [dimension["reason"].lower() for dimension in dimensions]
     placeholder_reasons = sum(
         any(marker in reason for marker in INVALID_EVALUATION_MARKERS)
         for reason in reasons
     )
-    summary = scored_result["overall_summary"]
+    summary = scored_result["overall_summary"].lower()
     placeholder_summary = any(
         marker in summary for marker in INVALID_EVALUATION_MARKERS
     )
@@ -152,8 +161,16 @@ def validate_evaluation_substance(scored_result: Dict[str, Any]) -> None:
         dimension["score"] == 1
         for dimension in scored_result["dimensions"].values()
     )
-    if all_minimum_scores and (
-        placeholder_reasons >= 2 or placeholder_summary
+    # 一个真实的“四项全1分”结果按评分合同必然包含足以导致不可用的
+    # 语义致命错误；四项全1但没有任何致命证据，是模型常见的空输入
+    # 占位结构。用结构判断兜底，避免无限追加占位关键词。
+    empty_minimum_placeholder = (
+        all_minimum_scores
+        and not scored_result["semantic_fatal_errors"]
+    )
+    if empty_minimum_placeholder or (
+        all_minimum_scores
+        and (placeholder_reasons >= 2 or placeholder_summary)
     ):
         raise ValueError(
             "Judge returned an empty-input placeholder instead of an evaluation"
@@ -239,6 +256,12 @@ def build_judge_messages(
     system_prompt = """你是严格、中立的企业差旅行程质量评审员。
 
 只依据提供的用户需求、结构化信息和行程内容评分，不补充外部事实，不因文字长或景点多而加分。
+必须先遵守以下输入合同，不能把合同允许的参考状态误判为质量问题：
+- booking_status=reference表示用户当前需要参考方案，不表示系统遗漏预订。只要行程包含对应去程、返程或住宿活动，并明确待确认，就不能仅因没有具体车次、酒店或尚未预订而扣分，更不能列为语义致命错误。
+- reference住宿允许把酒店品牌偏好写成选型原则；在没有外部查询结果时，不得反过来要求规划提供具体酒店门店或候选门店。
+- 不得使用材料之外的具体车程、航程、票务或营业信息判定行程不可能。时间可行性只能依据活动自身时间、描述中明确提供的耗时、固定事项和相邻活动衔接判断；宽泛的上午/下午参考时段不能被当成已确认班次。
+- 用户未提供会议地址、联系人或具体商务日程时，合理的商务工作占位和待确认提醒不等于缺少核心商务活动；只有整段行程确实没有商务安排时才能判为缺失。
+
 每个维度按1到5分：
 - 1分：严重不可用或核心方面明显错误；
 - 2分：存在重大问题，需要明显修改；
@@ -248,8 +271,8 @@ def build_judge_messages(
 
 四个维度：
 1. time_route_feasibility：检查时间先后、交通耗时、缓冲、固定活动冲突、折返和每日节奏。必须逐项比较活动时间段、描述中的耗时和下一活动开始时间：存在一处非关键的明确时间矛盾时最高3分；多个矛盾、关键交通无法完成或固定活动冲突时应为1到2分，并按严重程度判断是否属于语义致命错误。
-2. business_personalization：检查商务目标优先级、用户偏好、预算和政策约束，避免把出差写成景点堆砌。
-3. completeness_usability：检查每日安排、交通、住宿、用餐、返程和提醒是否清楚且可直接使用。不要因为用户输入本来没有提供会议地址、联系人、酒店名称或餐厅名称而扣分；如果行程明确提示确认、保留调整空间，就是合理处理。只评价规划Agent对已有信息的利用和缺失信息的处理。
+2. business_personalization：检查商务目标优先级、用户偏好、预算和政策约束，避免把出差写成景点堆砌。明确遗漏固定会议、违反企业硬政策、使用用户明确禁止的交通方式时，该维度必须为1分并记录semantic_fatal_errors；普通偏好没有充分体现但未违反硬约束时按2到4分处理。
+3. completeness_usability：检查每日安排、交通、住宿、用餐、返程和提醒是否清楚且可直接使用。不要因为用户输入本来没有提供会议地址、联系人、酒店名称或餐厅名称而扣分；如果行程明确提示确认、保留调整空间，就是合理处理。只评价规划Agent对已有信息的利用和缺失信息的处理。缺少必要去程、返程、整天有效安排或核心商务活动时，该维度必须为1分并记录semantic_fatal_errors。
 4. factual_groundedness：检查未查询的车次、票价、房价、天气、营业时间等是否被当成确定事实；候选信息应提醒核实。该维度使用以下具体锚点：
    - 1分：把未查询信息说成已确认、已预订，或大量关键事实明显无依据；
    - 2分：给出多项精确实时信息，却没有候选措辞和核实提醒；
@@ -257,7 +280,7 @@ def build_judge_messages(
    - 4分：主要使用时间段、范围或候选方案，清楚区分建议与实时事实；
    - 5分：关键事实均有提供的外部信息支持，或完全避免无依据的精确事实。
 
-semantic_fatal_errors只记录需要语义理解才能发现、且足以令行程不可执行的严重错误，例如固定会议冲突、关键交通在时间上不可能、明确违反硬政策、把未查询信息说成已确认或已预订。普通啰嗦、次要信息缺失、景点选择一般不能列为致命错误。
+semantic_fatal_errors只记录需要语义理解才能发现、且足以令行程不可执行的严重错误，例如固定会议冲突、关键交通在时间上不可能、明确违反硬政策、缺少必要去返程、把未查询信息说成已确认或已预订。出现致命错误时，必须把直接相关维度设为1分；普通啰嗦、次要信息缺失、景点选择一般不能列为致命错误。
 
 每个维度必须提供1到3个evidence_catalog中真实存在的证据编号，例如E001。只能输出编号，不能把原文或自行概括的句子放入evidence。只输出合法JSON，不输出Markdown或额外解释。"""
     user_prompt = (
@@ -289,6 +312,13 @@ class LLMItineraryJudge:
             response_format={"type": "json_object"},
         )
         text = await extract_json_from_async_response(response)
+        if not str(text or "").strip():
+            # 空响应没有任何可供“JSON修复”的内容，直接携带完整材料重评。
+            return await self._reevaluate_once(
+                case,
+                parsed_output,
+                ValueError("Judge returned empty text"),
+            )
         try:
             return self._parse_and_score(text, parsed_output)
         except Exception as first_error:

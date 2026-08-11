@@ -81,6 +81,42 @@ class TestItineraryFactValidator(unittest.TestCase):
             [],
         )
 
+    def test_allows_price_from_explicit_company_policy(self):
+        result = result_with_notes("住宿费用需控制在每晚500元以内。")
+        trusted_context = {
+            "policy_constraints": {
+                "hotel_budget_per_night": 500,
+            },
+        }
+
+        self.assertEqual(
+            find_unsupported_itinerary_facts(
+                result,
+                {},
+                trusted_context=trusted_context,
+            ),
+            [],
+        )
+
+    def test_other_price_is_still_rejected_when_policy_has_a_budget(self):
+        result = result_with_notes("建议选择每晚800元的酒店。")
+        trusted_context = {
+            "policy_constraints": {
+                "hotel_budget_per_night": 500,
+            },
+        }
+
+        categories = {
+            issue["category"]
+            for issue in find_unsupported_itinerary_facts(
+                result,
+                {},
+                trusted_context=trusted_context,
+            )
+        }
+
+        self.assertIn("unsupported_price", categories)
+
     def test_confirmed_business_meeting_is_not_treated_as_booking_claim(self):
         result = result_with_notes("已安排客户会议，按固定时间到场。")
 

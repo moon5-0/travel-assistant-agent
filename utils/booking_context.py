@@ -184,11 +184,25 @@ def find_booking_reference_issues(
             })
 
     for booking_ref, item in booking_context.items():
-        if item.get("status") == "confirmed" and booking_ref not in referenced:
+        # 去程和返程即使尚未预订，也必须在结构化行程中占有一个活动；
+        # booking_ref只表示活动方向，不代表票务已经确认。
+        required_in_itinerary = (
+            item.get("status") == "confirmed"
+            or booking_ref in {"outbound", "return"}
+        )
+        if required_in_itinerary and booking_ref not in referenced:
             issues.append({
-                "category": "confirmed_booking_not_referenced",
+                "category": (
+                    "confirmed_booking_not_referenced"
+                    if item.get("status") == "confirmed"
+                    else "required_booking_not_referenced"
+                ),
                 "booking_ref": booking_ref,
-                "message": "用户确认的预订没有进入任何行程活动。",
+                "message": (
+                    "用户确认的预订没有进入任何行程活动。"
+                    if item.get("status") == "confirmed"
+                    else "必要的去程或返程没有进入结构化行程。"
+                ),
             })
 
     return issues

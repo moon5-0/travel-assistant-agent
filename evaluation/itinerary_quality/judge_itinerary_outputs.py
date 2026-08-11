@@ -27,6 +27,7 @@ from evaluation.itinerary_quality.hard_rule_evaluator import (
 from evaluation.itinerary_quality.llm_judge import (
     DIMENSION_WEIGHTS,
     LLMItineraryJudge,
+    validate_evaluation_substance,
 )
 from evaluation.itinerary_quality.generate_itinerary_outputs import build_model
 
@@ -58,8 +59,10 @@ def load_source_report(path: Path) -> Dict[str, Any]:
 def select_runs(
     source_report: Dict[str, Any],
     case_ids: Iterable[str],
+    run_indices: Iterable[int] = (),
 ) -> List[Dict[str, Any]]:
     requested = set(case_ids)
+    requested_indices = set(run_indices)
     runs = list(source_report["runs"])
     available = {run.get("case_id") for run in runs}
     unknown = sorted(requested - available)
@@ -68,7 +71,11 @@ def select_runs(
     return [
         run
         for run in runs
-        if not requested or run.get("case_id") in requested
+        if (not requested or run.get("case_id") in requested)
+        and (
+            not requested_indices
+            or run.get("run_index") in requested_indices
+        )
     ]
 
 
@@ -88,6 +95,123 @@ def build_execution_summary(
     }
 
 
+def _run_key(run: Dict[str, Any]) -> tuple[Any, Any]:
+    return run.get("case_id"), run.get("run_index")
+
+
+def judge_run_needs_retry(run: Dict[str, Any] | None) -> bool:
+    """超时、缺失以及结构合法但内容为空的旧结果都需要补评。"""
+    if not isinstance(run, dict) or "judge_evaluation" not in run:
+        return True
+    try:
+        validate_evaluation_substance(run["judge_evaluation"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return False
+
+
+def select_resume_runs(
+    selected_source_runs: List[Dict[str, Any]],
+    previous_report: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    previous_by_key = {
+        _run_key(run): run
+        for run in previous_report.get("runs", [])
+    }
+    return [
+        run
+        for run in selected_source_runs
+        if judge_run_needs_retry(previous_by_key.get(_run_key(run)))
+    ]
+
+
+def summarize_judge_runs(combined_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """只将真正通过Judge校验的结果纳入质量指标分母。"""
+    judged_runs = [
+        run for run in combined_runs if "judge_evaluation" in run
+    ]
+    judged_count = len(judged_runs)
+    hard_passed = sum(
+        run["hard_evaluation"]["hard_constraints_passed"]
+        for run in judged_runs
+    )
+    fatal_runs = sum(run["fatal_error"] for run in judged_runs)
+    qualified_runs = sum(run["passed"] for run in judged_runs)
+    quality_scores = [
+        run["judge_evaluation"]["weighted_quality_score"]
+        for run in judged_runs
+    ]
+    dimension_averages = {
+        name: round(sum(
+            run["judge_evaluation"]["dimensions"][name]["score"]
+            for run in judged_runs
+        ) / judged_count, 3) if judged_count else 0.0
+        for name in DIMENSION_WEIGHTS
+    }
+    return {
+        "total_runs": len(combined_runs),
+        "judged_runs": judged_count,
+        "judge_error_runs": len(combined_runs) - judged_count,
+        "hard_constraint_passed_runs": hard_passed,
+        "hard_constraint_pass_rate": (
+            hard_passed / judged_count if judged_count else 0.0
+        ),
+        "average_itinerary_quality_score": (
+            round(sum(quality_scores) / judged_count, 2)
+            if judged_count else 0.0
+        ),
+        "fatal_error_runs": fatal_runs,
+        "fatal_error_rate": (
+            fatal_runs / judged_count if judged_count else 0.0
+        ),
+        "qualified_runs": qualified_runs,
+        "qualified_rate": (
+            qualified_runs / judged_count if judged_count else 0.0
+        ),
+        "dimension_average_scores_1_to_5": dimension_averages,
+    }
+
+
+def merge_judge_reports(
+    previous_report: Dict[str, Any],
+    retry_report: Dict[str, Any],
+    source_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    """用补评结果替换旧错误，同时保留之前已经成功的评价。"""
+    previous_by_key = {
+        _run_key(run): run
+        for run in previous_report.get("runs", [])
+    }
+    retry_by_key = {
+        _run_key(run): run
+        for run in retry_report.get("runs", [])
+    }
+    merged_runs = []
+    for source_run in source_report.get("runs", []):
+        key = _run_key(source_run)
+        merged = retry_by_key.get(key, previous_by_key.get(key))
+        if merged is None:
+            merged = {
+                "case_id": key[0],
+                "run_index": key[1],
+                "judge_error": {
+                    "type": "MissingJudgeResult",
+                    "message": "该行程尚未执行Judge评价",
+                },
+            }
+        merged_runs.append(merged)
+    return {
+        "dataset_version": retry_report.get(
+            "dataset_version",
+            previous_report.get("dataset_version"),
+        ),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_report_generated_at": source_report.get("generated_at"),
+        "summary": summarize_judge_runs(merged_runs),
+        "runs": merged_runs,
+    }
+
+
 async def run_judging(
     judge: Any,
     dataset: Dict[str, Any],
@@ -95,6 +219,9 @@ async def run_judging(
     selected_runs: List[Dict[str, Any]],
     *,
     progress: bool = False,
+    judge_timeout_seconds: float = 360.0,
+    max_attempts: int = 2,
+    retry_delay_seconds: float = 2.0,
 ) -> Dict[str, Any]:
     cases = {case["id"]: case for case in dataset["cases"]}
     combined_runs = []
@@ -124,11 +251,37 @@ async def run_judging(
             source_run["output"],
             dataset["global_rules"],
         )
-        try:
-            judge_evaluation = await judge.evaluate(
-                case,
-                source_run["output"],
-            )
+        judge_evaluation = None
+        judge_error = None
+        attempts_used = 0
+        for attempt in range(1, max_attempts + 1):
+            attempts_used = attempt
+            try:
+                # 每次都新建evaluate协程；协程被超时取消后不能再次等待。
+                judge_evaluation = await asyncio.wait_for(
+                    judge.evaluate(
+                        case,
+                        source_run["output"],
+                    ),
+                    timeout=judge_timeout_seconds,
+                )
+                judge_error = None
+                break
+            except Exception as exc:
+                judge_error = exc
+                if attempt < max_attempts:
+                    delay = retry_delay_seconds * (2 ** (attempt - 1))
+                    if progress:
+                        print(
+                            f"    Judge失败，{delay:g}秒后重试 "
+                            f"({attempt}/{max_attempts})："
+                            f"{type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+
+        if judge_evaluation is not None:
             combined_fatal = bool(
                 hard_evaluation["fatal_errors"]
                 or judge_evaluation["semantic_fatal_errors"]
@@ -143,6 +296,7 @@ async def run_judging(
                 "run_index": source_run.get("run_index"),
                 "hard_evaluation": hard_evaluation,
                 "judge_evaluation": judge_evaluation,
+                "judge_attempts": attempts_used,
                 "fatal_error": combined_fatal,
                 "passed": passed,
             })
@@ -152,70 +306,33 @@ async def run_judging(
                     f"quality={judge_evaluation['weighted_quality_score']}",
                     flush=True,
                 )
-        except Exception as exc:
+        else:
+            assert judge_error is not None
+            error_message = str(judge_error)
+            if not error_message and isinstance(judge_error, TimeoutError):
+                error_message = "Judge evaluation timed out"
             combined_runs.append({
                 "case_id": case_id,
                 "run_index": source_run.get("run_index"),
                 "hard_evaluation": hard_evaluation,
+                "judge_attempts": attempts_used,
                 "judge_error": {
-                    "type": type(exc).__name__,
-                    "message": str(exc),
+                    "type": type(judge_error).__name__,
+                    "message": error_message,
                 },
             })
             if progress:
                 print(
-                    f"    ERROR: {type(exc).__name__}: {exc}",
+                    f"    ERROR after {attempts_used} attempts: "
+                    f"{type(judge_error).__name__}: {error_message}",
                     flush=True,
                 )
-
-    judged_runs = [
-        run for run in combined_runs if "judge_evaluation" in run
-    ]
-    judged_count = len(judged_runs)
-    hard_passed = sum(
-        run["hard_evaluation"]["hard_constraints_passed"]
-        for run in judged_runs
-    )
-    fatal_runs = sum(run["fatal_error"] for run in judged_runs)
-    qualified_runs = sum(run["passed"] for run in judged_runs)
-    quality_scores = [
-        run["judge_evaluation"]["weighted_quality_score"]
-        for run in judged_runs
-    ]
-    dimension_averages = {
-        name: round(sum(
-            run["judge_evaluation"]["dimensions"][name]["score"]
-            for run in judged_runs
-        ) / judged_count, 3) if judged_count else 0.0
-        for name in DIMENSION_WEIGHTS
-    }
 
     return {
         "dataset_version": dataset["version"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_report_generated_at": source_report.get("generated_at"),
-        "summary": {
-            "total_runs": len(combined_runs),
-            "judged_runs": judged_count,
-            "judge_error_runs": len(combined_runs) - judged_count,
-            "hard_constraint_passed_runs": hard_passed,
-            "hard_constraint_pass_rate": (
-                hard_passed / judged_count if judged_count else 0.0
-            ),
-            "average_itinerary_quality_score": (
-                round(sum(quality_scores) / judged_count, 2)
-                if judged_count else 0.0
-            ),
-            "fatal_error_runs": fatal_runs,
-            "fatal_error_rate": (
-                fatal_runs / judged_count if judged_count else 0.0
-            ),
-            "qualified_runs": qualified_runs,
-            "qualified_rate": (
-                qualified_runs / judged_count if judged_count else 0.0
-            ),
-            "dimension_average_scores_1_to_5": dimension_averages,
-        },
+        "summary": summarize_judge_runs(combined_runs),
         "runs": combined_runs,
     }
 
@@ -232,7 +349,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-report", type=Path)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--case", action="append", default=[])
+    parser.add_argument(
+        "--run-index",
+        action="append",
+        type=int,
+        default=[],
+        help="只评价源报告中的指定重复轮次；可重复传入",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=360.0,
+        help="单份Judge评价（含内部修复）的最长等待时间",
+    )
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=180.0,
+        help="Judge单次底层模型请求的网络超时时间",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=2,
+        help="单份Judge评价失败后的最大完整尝试次数",
+    )
+    parser.add_argument(
+        "--retry-delay-seconds",
+        type=float,
+        default=2.0,
+        help="完整重试前的初始等待时间（指数增长）",
+    )
+    parser.add_argument(
+        "--resume-report",
+        type=Path,
+        help="从旧Judge报告断点续评，只补跑错误、缺失或占位结果",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -248,7 +401,18 @@ def main() -> int:
     try:
         dataset = load_dataset(args.cases)
         source_report = load_source_report(source_path)
-        selected_runs = select_runs(source_report, args.case)
+        selected_runs = select_runs(
+            source_report,
+            args.case,
+            args.run_index,
+        )
+        previous_report = None
+        if args.resume_report:
+            previous_report = load_source_report(args.resume_report)
+            selected_runs = select_resume_runs(
+                selected_runs,
+                previous_report,
+            )
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"INVALID: {exc}")
         return 2
@@ -273,19 +437,37 @@ def main() -> int:
     LLM_CONFIG["api_key"] = api_key
 
     init_agentscope()
-    judge = LLMItineraryJudge(build_model(args.temperature))
+    judge = LLMItineraryJudge(build_model(
+        args.temperature,
+        request_timeout_seconds=args.request_timeout_seconds,
+    ))
     report = asyncio.run(run_judging(
         judge,
         dataset,
         source_report,
         selected_runs,
         progress=True,
+        judge_timeout_seconds=args.timeout_seconds,
+        max_attempts=args.max_attempts,
+        retry_delay_seconds=args.retry_delay_seconds,
     ))
+    if previous_report is not None:
+        report = merge_judge_reports(
+            previous_report,
+            report,
+            source_report,
+        )
     report["configuration"] = {
         "judge_model_name": LLM_CONFIG["model_name"],
         "judge_temperature": args.temperature,
         "source_report": str(source_path),
         "planning_outputs_reused": True,
+        "request_timeout_seconds": args.request_timeout_seconds,
+        "judge_timeout_seconds": args.timeout_seconds,
+        "max_attempts": args.max_attempts,
+        "resume_report": (
+            str(args.resume_report) if args.resume_report else None
+        ),
     }
 
     output_path = args.output or default_output_path()

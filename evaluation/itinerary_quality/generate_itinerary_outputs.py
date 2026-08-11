@@ -130,14 +130,22 @@ def build_execution_summary(
         "total_agent_calls": len(cases) * runs,
         "evaluation_stage": "hard_rules_only",
         "note": (
-            "每次通常调用规划模型1次；格式异常或检测到明确时间可行性问题时，"
-            "对应修复步骤会各额外调用1次。"
+            "每次通常调用规划模型1次；格式异常时会额外尝试1次格式修复，"
+            "统一质量门发现阻断问题时最多再调用1次模型集中修复。"
         ),
     }
 
 
-def build_model(temperature: float) -> OpenAIChatModel:
-    timeout_sec = SYSTEM_CONFIG.get("timeout", 60)
+def build_model(
+    temperature: float,
+    request_timeout_seconds: float | None = None,
+) -> OpenAIChatModel:
+    """创建评估模型；Judge可单独使用更长的底层请求超时。"""
+    timeout_sec = (
+        request_timeout_seconds
+        if request_timeout_seconds is not None
+        else SYSTEM_CONFIG.get("timeout", 60)
+    )
     return OpenAIChatModel(
         model_name=LLM_CONFIG["model_name"],
         api_key=LLM_CONFIG["api_key"],
@@ -152,14 +160,37 @@ def build_model(temperature: float) -> OpenAIChatModel:
     )
 
 
+def _returned_agent_error(raw_output: Any) -> Dict[str, str] | None:
+    """识别 Agent 已捕获并包装成 JSON 的执行错误。"""
+    try:
+        result = (
+            json.loads(raw_output)
+            if isinstance(raw_output, str)
+            else raw_output
+        )
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(result, dict) or "error" not in result:
+        return None
+    technical_error = str(result.get("technical_error") or "").strip()
+    user_error = str(result.get("error") or "").strip()
+    return {
+        "type": "AgentReturnedError",
+        "message": technical_error or user_error or "Agent返回空错误结果",
+    }
+
+
 async def run_cases(
     agent: Any,
     dataset: Dict[str, Any],
     cases: List[Dict[str, Any]],
     runs_per_case: int,
     progress: bool = False,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 2.0,
+    inter_run_delay_seconds: float = 0.0,
 ) -> Dict[str, Any]:
-    """逐场景调用真实规划Agent，并保留原始输出和硬规则结果。"""
+    """逐场景调用规划Agent；执行错误有限重试且不进入质量分母。"""
     run_results = []
     total_runs = len(cases) * runs_per_case
     completed_runs = 0
@@ -172,9 +203,35 @@ async def run_cases(
                     flush=True,
                 )
             started = time.perf_counter()
-            try:
-                response = await agent.reply(build_agent_input(case))
-                raw_output = response.content
+            raw_output = None
+            execution_error = None
+            attempts_used = 0
+            for attempt in range(1, max_attempts + 1):
+                attempts_used = attempt
+                try:
+                    response = await agent.reply(build_agent_input(case))
+                    raw_output = response.content
+                    execution_error = _returned_agent_error(raw_output)
+                except Exception as exc:
+                    execution_error = {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+
+                if execution_error is None:
+                    break
+                if attempt < max_attempts:
+                    delay = retry_delay_seconds * (2 ** (attempt - 1))
+                    if progress:
+                        print(
+                            f"    执行失败，{delay:g}秒后重试 "
+                            f"({attempt}/{max_attempts})："
+                            f"{execution_error['message']}",
+                            flush=True,
+                        )
+                    await asyncio.sleep(delay)
+
+            if execution_error is None:
                 evaluation = evaluate_case(
                     case,
                     raw_output,
@@ -187,13 +244,14 @@ async def run_cases(
                         (time.perf_counter() - started) * 1000,
                         3,
                     ),
+                    "attempts": attempts_used,
                     "output": raw_output,
                     "evaluation": evaluation,
                 })
                 if progress:
                     status = "PASS" if evaluation["passed"] else "FAIL"
                     print(f"    {status}", flush=True)
-            except Exception as exc:
+            else:
                 run_results.append({
                     "case_id": case["id"],
                     "run_index": run_index,
@@ -201,21 +259,27 @@ async def run_cases(
                         (time.perf_counter() - started) * 1000,
                         3,
                     ),
-                    "execution_error": {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                    },
+                    "attempts": attempts_used,
+                    "execution_error": execution_error,
+                    "last_output": raw_output,
                 })
                 if progress:
                     print(
-                        f"    ERROR: {type(exc).__name__}: {exc}",
+                        f"    ERROR: {execution_error['type']}: "
+                        f"{execution_error['message']}",
                         flush=True,
                     )
             completed_runs += 1
+            if inter_run_delay_seconds > 0 and completed_runs < total_runs:
+                await asyncio.sleep(inter_run_delay_seconds)
 
     evaluated = [run for run in run_results if "evaluation" in run]
     passed = sum(
         run["evaluation"]["hard_constraints_passed"]
+        for run in evaluated
+    )
+    all_checks_passed = sum(
+        run["evaluation"]["all_checks_passed"]
         for run in evaluated
     )
     fatal_runs = sum(
@@ -230,13 +294,28 @@ async def run_cases(
             "total_runs": len(run_results),
             "evaluated_runs": evaluated_count,
             "execution_error_runs": len(run_results) - evaluated_count,
+            "execution_success_rate": (
+                evaluated_count / len(run_results) if run_results else 0.0
+            ),
             "hard_constraint_passed_runs": passed,
             "hard_constraint_pass_rate": (
                 passed / evaluated_count if evaluated_count else 0.0
             ),
+            "all_checks_passed_runs": all_checks_passed,
+            "all_checks_pass_rate": (
+                all_checks_passed / evaluated_count
+                if evaluated_count else 0.0
+            ),
             "fatal_error_runs": fatal_runs,
             "fatal_error_rate": (
                 fatal_runs / evaluated_count if evaluated_count else 0.0
+            ),
+            "end_to_end_pass_rate": (
+                passed / len(run_results) if run_results else 0.0
+            ),
+            "end_to_end_all_checks_pass_rate": (
+                all_checks_passed / len(run_results)
+                if run_results else 0.0
             ),
         },
         "runs": run_results,
@@ -261,6 +340,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=3,
+        help="单个案例遇到网络或Agent执行错误时的最大尝试次数",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--dry-run",
@@ -275,6 +360,7 @@ async def run_real_evaluation(
     selected_cases: List[Dict[str, Any]],
     runs: int,
     temperature: float,
+    max_attempts: int,
 ) -> Dict[str, Any]:
     model = build_model(temperature)
     agent_class = load_itinerary_agent_class()
@@ -285,6 +371,9 @@ async def run_real_evaluation(
         selected_cases,
         runs,
         progress=True,
+        max_attempts=max_attempts,
+        retry_delay_seconds=2.0,
+        inter_run_delay_seconds=0.5,
     )
     report["configuration"] = {
         "model_name": LLM_CONFIG["model_name"],
@@ -298,6 +387,9 @@ def main() -> int:
     args = parse_args()
     if args.runs < 1:
         print("INVALID: --runs必须大于等于1")
+        return 2
+    if args.max_attempts < 1:
+        print("INVALID: --max-attempts必须大于等于1")
         return 2
 
     try:
@@ -332,6 +424,7 @@ def main() -> int:
         selected_cases,
         args.runs,
         args.temperature,
+        args.max_attempts,
     ))
     output_path = args.output or default_output_path()
     output_path.parent.mkdir(parents=True, exist_ok=True)
