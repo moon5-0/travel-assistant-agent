@@ -20,17 +20,19 @@ from utils.booking_context import (
 )
 
 
-DEFAULT_CASES_PATH = Path(__file__).with_name("itinerary_quality_cases.json")
+LEGACY_CASES_PATH = Path(__file__).with_name("itinerary_quality_cases.json")
+DEFAULT_CASES_PATH = Path(__file__).with_name(
+    "itinerary_quality_cases_v0.3.0.json"
+)
 FATAL_TRIP_FIELDS = {
-    "origin",
-    "destination",
     "start_date",
     "end_date",
     "duration_days",
-    "city_order",
 }
 PLANNING_TRIP_TYPES = {"business", "personal", "unknown"}
 LEISURE_PREFERENCES = {"forbidden", "requested", "unspecified"}
+BOOKING_STATUSES = {"confirmed", "reference"}
+BOOKING_GROUNDED_CONTRACT = "booking-grounded-v1"
 
 
 class DatasetValidationError(ValueError):
@@ -90,6 +92,17 @@ def validate_dataset(dataset: Any) -> Dict[str, Any]:
     """校验测试集结构，防止错误的“标准答案”进入评估。"""
     data = _require_dict(dataset, "dataset")
     _require_string(data.get("version"), "dataset.version")
+    planning_input_contract = data.get("planning_input_contract")
+    if planning_input_contract is not None:
+        _require_string(
+            planning_input_contract,
+            "dataset.planning_input_contract",
+        )
+        if planning_input_contract != BOOKING_GROUNDED_CONTRACT:
+            raise DatasetValidationError(
+                "dataset.planning_input_contract must be "
+                f"{BOOKING_GROUNDED_CONTRACT}"
+            )
     global_rules = _require_dict(
         data.get("global_rules"),
         "dataset.global_rules",
@@ -146,10 +159,30 @@ def validate_dataset(dataset: Any) -> Dict[str, Any]:
             planning_signals.get("explicit_constraints"),
             f"{location}.input.planning_signals.explicit_constraints",
         )
-        _require_dict(
+        trip_info = _require_dict(
             case_input.get("trip_info"),
             f"{location}.input.trip_info",
         )
+        if planning_input_contract == BOOKING_GROUNDED_CONTRACT:
+            for field in ("departure_time_window", "return_time_window"):
+                _require_string(
+                    trip_info.get(field),
+                    f"{location}.input.trip_info.{field}",
+                )
+            for field in (
+                "outbound_booking_status",
+                "return_booking_status",
+                "hotel_booking_status",
+            ):
+                value = _require_string(
+                    trip_info.get(field),
+                    f"{location}.input.trip_info.{field}",
+                )
+                if value not in BOOKING_STATUSES:
+                    raise DatasetValidationError(
+                        f"{location}.input.trip_info.{field} must be one of "
+                        f"{sorted(BOOKING_STATUSES)}"
+                    )
         _require_dict(
             case_input.get("user_preferences"),
             f"{location}.input.user_preferences",
@@ -326,9 +359,11 @@ def _result_from_invalid_output(message: str) -> Dict[str, Any]:
     }
     return {
         "passed": False,
+        "all_checks_passed": False,
         "hard_constraints_passed": False,
         "fatal_errors": ["output.valid_json"],
         "failures": ["output.valid_json"],
+        "quality_warnings": [],
         "summary": {"passed_checks": 0, "failed_checks": 1, "total_checks": 1},
         "checks": [check],
     }
@@ -427,9 +462,15 @@ def evaluate_case(
         return {
             "case_id": case.get("id"),
             "passed": False,
+            "all_checks_passed": False,
             "hard_constraints_passed": False,
             "fatal_errors": fatal_errors,
             "failures": failures,
+            "quality_warnings": [
+                check["id"]
+                for check in checks
+                if not check["passed"] and not check["fatal"]
+            ],
             "summary": {
                 "passed_checks": len(checks) - len(failures),
                 "failed_checks": len(failures),
@@ -537,73 +578,8 @@ def evaluate_case(
             actual_value=actual_value,
         )
 
-    for rule in expected["required_content"]:
-        if "any_of" in rule:
-            matched = [
-                token
-                for token in rule["any_of"]
-                if _contains_token(itinerary_text, token)
-            ]
-            passed = bool(matched)
-            details = {
-                "mode": "any_of",
-                "matched": matched,
-                "candidates": rule["any_of"],
-            }
-        else:
-            missing = [
-                token
-                for token in rule["all_of"]
-                if not _contains_token(itinerary_text, token)
-            ]
-            passed = not missing
-            details = {
-                "mode": "all_of",
-                "missing": missing,
-                "required": rule["all_of"],
-            }
-        add_check(
-            f"required_content.{rule['id']}",
-            "required_content",
-            passed,
-            fatal=rule.get("fatal", False),
-            details=details,
-        )
-
-    for rule in expected["forbidden_content"]:
-        matched = _assertive_pattern_matches(
-            itinerary_text,
-            rule["patterns"],
-        )
-        add_check(
-            f"forbidden_content.{rule['id']}",
-            "forbidden_content",
-            not matched,
-            fatal=rule.get("fatal", False),
-            details={"matched": matched},
-        )
-
-    allowed_confirmations = set(
-        expected.get("allowed_confirmation_patterns", [])
-    )
-    unsupported = [
-        pattern
-        for pattern in _assertive_pattern_matches(
-            itinerary_text,
-            rules.get("unsupported_confirmation_patterns", []),
-        )
-        if pattern not in allowed_confirmations
-    ]
-    add_check(
-        "global.unsupported_confirmation",
-        "forbidden_content",
-        not unsupported,
-        fatal=True,
-        details={
-            "matched": unsupported,
-            "allowed": sorted(allowed_confirmations),
-        },
-    )
+    # required_content、forbidden_content以及确认性措辞都需要语义理解，
+    # 不再由关键词决定硬规则结果，统一交给LLM Judge按证据评分。
 
     failures = [check["id"] for check in checks if not check["passed"]]
     fatal_errors = [
@@ -611,12 +587,22 @@ def evaluate_case(
         for check in checks
         if not check["passed"] and check["fatal"]
     ]
+    quality_warnings = [
+        check["id"]
+        for check in checks
+        if not check["passed"] and not check["fatal"]
+    ]
+    hard_constraints_passed = not fatal_errors
     return {
         "case_id": case.get("id"),
-        "passed": not failures,
-        "hard_constraints_passed": not failures,
+        # 硬规则通过只由阻断问题决定；偏好体现、提示措辞等非致命项
+        # 作为质量提醒交给LLM Judge，避免把“不完美”等同于“不可用”。
+        "passed": hard_constraints_passed,
+        "all_checks_passed": not failures,
+        "hard_constraints_passed": hard_constraints_passed,
         "fatal_errors": fatal_errors,
         "failures": failures,
+        "quality_warnings": quality_warnings,
         "summary": {
             "passed_checks": len(checks) - len(failures),
             "failed_checks": len(failures),

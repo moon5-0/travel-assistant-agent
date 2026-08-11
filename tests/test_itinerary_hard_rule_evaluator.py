@@ -30,6 +30,13 @@ def valid_standard_output():
                     "city": "北京",
                     "activities": [
                         {
+                            "time": "上午",
+                            "type": "transport_booking",
+                            "booking_ref": "outbound",
+                            "location": "去程交通",
+                            "description": "根据上午时段选择合适交通",
+                        },
+                        {
                             "time": "09:00-12:00",
                             "location": "客户公司",
                             "description": "客户拜访",
@@ -57,6 +64,8 @@ def valid_standard_output():
                     "activities": [
                         {
                             "time": "15:00-20:00",
+                            "type": "transport_booking",
+                            "booking_ref": "return",
                             "location": "北京南站",
                             "description": "返程返回苏州",
                             "transport": "高铁",
@@ -67,6 +76,11 @@ def valid_standard_output():
             "notes": ["具体车次请通过12306核实"],
         },
         "planning_complete": True,
+        "booking_usage": {
+            "outbound": "use_reference_plan",
+            "return": "use_reference_plan",
+            "hotel": "use_reference_plan",
+        },
     }
 
 
@@ -77,8 +91,40 @@ class TestItineraryQualityDataset(unittest.TestCase):
     def test_project_dataset_is_valid_and_contains_ten_cases(self):
         summary = summarize_dataset(self.dataset)
 
-        self.assertEqual(summary["version"], "0.2.0-draft")
+        self.assertEqual(summary["version"], "0.3.0")
         self.assertEqual(summary["case_count"], 10)
+
+    def test_all_cases_follow_booking_grounded_input_contract(self):
+        self.assertEqual(
+            self.dataset["planning_input_contract"],
+            "booking-grounded-v1",
+        )
+        expected = {
+            "departure_time_window": "上午",
+            "return_time_window": "下午",
+            "outbound_booking_status": "reference",
+            "return_booking_status": "reference",
+            "hotel_booking_status": "reference",
+        }
+        for case in self.dataset["cases"]:
+            trip_info = case["input"]["trip_info"]
+            with self.subTest(case_id=case["id"]):
+                self.assertEqual(
+                    {field: trip_info.get(field) for field in expected},
+                    expected,
+                )
+
+    def test_booking_grounded_contract_rejects_missing_status(self):
+        invalid = copy.deepcopy(self.dataset)
+        del invalid["cases"][0]["input"]["trip_info"][
+            "outbound_booking_status"
+        ]
+
+        with self.assertRaisesRegex(
+            DatasetValidationError,
+            "outbound_booking_status",
+        ):
+            validate_dataset(invalid)
 
     def test_invalid_planning_signal_is_rejected(self):
         invalid = copy.deepcopy(self.dataset)
@@ -133,16 +179,16 @@ class TestItineraryHardRuleEvaluator(unittest.TestCase):
         self.assertEqual(result["failures"], [])
         self.assertEqual(result["fatal_errors"], [])
 
-    def test_wrong_destination_is_a_fatal_error(self):
+    def test_wrong_destination_is_left_to_semantic_judge(self):
         output = valid_standard_output()
         serialized = json.dumps(output, ensure_ascii=False).replace("北京", "上海")
         output = json.loads(serialized)
 
         result = self.evaluate(output)
 
-        self.assertFalse(result["passed"])
+        self.assertTrue(result["passed"])
         self.assertIn("required_trip.destination", result["failures"])
-        self.assertIn("required_trip.destination", result["fatal_errors"])
+        self.assertNotIn("required_trip.destination", result["fatal_errors"])
 
     def test_wrong_day_count_and_dates_are_reported(self):
         output = valid_standard_output()
@@ -153,7 +199,7 @@ class TestItineraryHardRuleEvaluator(unittest.TestCase):
         self.assertIn("required_trip.duration_days", result["failures"])
         self.assertIn("required_trip.daily_plan_dates", result["failures"])
 
-    def test_missing_required_content_is_reported(self):
+    def test_missing_required_content_is_left_to_semantic_judge(self):
         output = valid_standard_output()
         serialized = (
             json.dumps(output, ensure_ascii=False)
@@ -165,16 +211,19 @@ class TestItineraryHardRuleEvaluator(unittest.TestCase):
 
         result = self.evaluate(output)
 
-        self.assertIn("required_content.business_first", result["failures"])
+        self.assertNotIn("required_content.business_first", result["failures"])
+        self.assertTrue(result["hard_constraints_passed"])
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["all_checks_passed"])
 
-    def test_unsupported_confirmation_is_fatal(self):
+    def test_unsupported_confirmation_is_left_to_semantic_judge(self):
         output = valid_standard_output()
         output["itinerary"]["notes"].append("高铁余票充足")
 
         result = self.evaluate(output)
 
-        self.assertIn("global.unsupported_confirmation", result["failures"])
-        self.assertIn("global.unsupported_confirmation", result["fatal_errors"])
+        self.assertNotIn("global.unsupported_confirmation", result["failures"])
+        self.assertTrue(result["passed"])
 
     def test_negated_confirmation_is_not_a_false_positive(self):
         output = valid_standard_output()

@@ -29,6 +29,17 @@ class FakeItineraryAgent:
         )
 
 
+class SequenceItineraryAgent:
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.inputs = []
+
+    async def reply(self, message):
+        self.inputs.append(message)
+        output = self.outputs.pop(0)
+        return SimpleNamespace(content=json.dumps(output, ensure_ascii=False))
+
+
 class TestItineraryQualityRunSetup(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.dataset = load_dataset()
@@ -108,7 +119,61 @@ class TestItineraryQualityRunSetup(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["summary"]["total_runs"], 1)
         self.assertEqual(report["summary"]["evaluated_runs"], 1)
         self.assertEqual(report["summary"]["hard_constraint_pass_rate"], 1.0)
+        self.assertEqual(report["summary"]["all_checks_pass_rate"], 1.0)
+        self.assertEqual(
+            report["summary"]["end_to_end_all_checks_pass_rate"],
+            1.0,
+        )
         self.assertEqual(report["summary"]["fatal_error_rate"], 0.0)
+
+    async def test_agent_error_result_is_retried_then_evaluated(self):
+        error_output = {
+            "itinerary": {"daily_plans": []},
+            "planning_complete": False,
+            "error": "行程规划过程中出现问题：Connection error.",
+            "technical_error": "Connection error.",
+        }
+        agent = SequenceItineraryAgent([
+            error_output,
+            valid_standard_output(),
+        ])
+
+        report = await run_cases(
+            agent,
+            self.dataset,
+            [self.case],
+            runs_per_case=1,
+            max_attempts=2,
+            retry_delay_seconds=0,
+        )
+
+        self.assertEqual(len(agent.inputs), 2)
+        self.assertEqual(report["summary"]["execution_error_runs"], 0)
+        self.assertEqual(report["summary"]["hard_constraint_pass_rate"], 1.0)
+        self.assertEqual(report["runs"][0]["attempts"], 2)
+
+    async def test_exhausted_agent_errors_are_not_quality_scored(self):
+        error_output = {
+            "itinerary": {"daily_plans": []},
+            "planning_complete": False,
+            "error": "行程规划过程中出现问题：",
+            "technical_error": "",
+        }
+        agent = FakeItineraryAgent(error_output)
+
+        report = await run_cases(
+            agent,
+            self.dataset,
+            [self.case],
+            runs_per_case=1,
+            max_attempts=2,
+            retry_delay_seconds=0,
+        )
+
+        self.assertEqual(report["summary"]["evaluated_runs"], 0)
+        self.assertEqual(report["summary"]["execution_error_runs"], 1)
+        self.assertEqual(report["summary"]["execution_success_rate"], 0.0)
+        self.assertNotIn("evaluation", report["runs"][0])
 
 
 if __name__ == "__main__":

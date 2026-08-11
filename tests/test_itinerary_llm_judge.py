@@ -8,13 +8,20 @@ import unittest
 
 from evaluation.itinerary_quality.hard_rule_evaluator import load_dataset
 from evaluation.itinerary_quality.llm_judge import (
+    DIMENSION_WEIGHTS,
     LLMItineraryJudge,
     build_evidence_catalog,
     build_judge_messages,
     score_judge_output,
+    validate_evaluation_substance,
     validate_evidence_grounding,
 )
-from evaluation.itinerary_quality.judge_itinerary_outputs import run_judging
+from evaluation.itinerary_quality.judge_itinerary_outputs import (
+    judge_run_needs_retry,
+    merge_judge_reports,
+    run_judging,
+    select_resume_runs,
+)
 from tests.test_itinerary_hard_rule_evaluator import valid_standard_output
 
 
@@ -68,6 +75,14 @@ class FakeModel:
 
 
 class TestJudgeScoring(unittest.TestCase):
+    def test_dimension_weights_prioritize_time_and_fact_reliability(self):
+        self.assertEqual(DIMENSION_WEIGHTS, {
+            "time_route_feasibility": 35,
+            "business_personalization": 25,
+            "completeness_usability": 20,
+            "factual_groundedness": 20,
+        })
+
     def test_weighted_score_is_computed_by_code(self):
         result = score_judge_output(valid_judge_output())
 
@@ -86,6 +101,22 @@ class TestJudgeScoring(unittest.TestCase):
 
         self.assertGreater(result["weighted_quality_score"], 70)
         self.assertFalse(result["judge_passed"])
+
+    def test_all_minimum_scores_without_fatal_evidence_are_placeholder(self):
+        output = valid_judge_output()
+        for dimension in (
+            "time_route_feasibility",
+            "business_personalization",
+            "completeness_usability",
+            "factual_groundedness",
+        ):
+            output[dimension]["score"] = 1
+            output[dimension]["reason"] = "占位结构"
+        output["semantic_fatal_errors"] = []
+        scored = score_judge_output(output)
+
+        with self.assertRaisesRegex(ValueError, "placeholder"):
+            validate_evaluation_substance(scored)
 
     def test_semantic_fatal_error_forces_failure(self):
         output = valid_judge_output()
@@ -136,6 +167,10 @@ class TestJudgeScoring(unittest.TestCase):
         self.assertIn("trip_info", prompt)
         self.assertIn("user_preferences", prompt)
         self.assertIn("itinerary_output", prompt)
+        system_prompt = messages[0]["content"]
+        self.assertIn("booking_status=reference", system_prompt)
+        self.assertIn("不得反过来要求规划提供具体酒店门店", system_prompt)
+        self.assertIn("不得使用材料之外的具体车程", system_prompt)
 
     def test_ungrounded_evidence_is_rejected(self):
         result = score_judge_output(valid_judge_output())
@@ -187,6 +222,20 @@ class TestLLMItineraryJudge(unittest.IsolatedAsyncioTestCase):
         self.assertIn("factual_groundedness", repair_prompt)
         self.assertIn("禁止改成accuracy", repair_prompt)
 
+    async def test_empty_initial_response_skips_repair_and_reevaluates(self):
+        model = FakeModel([
+            "",
+            json.dumps(valid_judge_output(), ensure_ascii=False),
+        ])
+        judge = LLMItineraryJudge(model)
+
+        result = await judge.evaluate(self.case, valid_standard_output())
+
+        self.assertTrue(result["judge_passed"])
+        self.assertEqual(len(model.calls), 2)
+        reevaluation_prompt = model.calls[1]["messages"][1]["content"]
+        self.assertIn("上方评估材料并非空白", reevaluation_prompt)
+
     async def test_ungrounded_evidence_is_repaired_once(self):
         invalid = valid_judge_output()
         invalid["time_route_feasibility"]["evidence"] = [
@@ -214,8 +263,12 @@ class TestLLMItineraryJudge(unittest.IsolatedAsyncioTestCase):
             "factual_groundedness",
         ):
             placeholder[dimension_name]["score"] = 1
-            placeholder[dimension_name]["reason"] = "输入为空，无法评估。"
-        placeholder["overall_summary"] = "输入为空，无法进行行程评价。"
+            placeholder[dimension_name]["reason"] = (
+                "原始内容缺失，无法评估，设为最低分。"
+            )
+        placeholder["overall_summary"] = (
+            "原始内容为空，无法进行整体评价。"
+        )
         model = FakeModel([
             json.dumps(invalid, ensure_ascii=False),
             json.dumps(placeholder, ensure_ascii=False),
@@ -234,6 +287,17 @@ class TestLLMItineraryJudge(unittest.IsolatedAsyncioTestCase):
 
 class FakeJudge:
     async def evaluate(self, case, itinerary_output):
+        return score_judge_output(valid_judge_output())
+
+
+class FlakyJudge:
+    def __init__(self):
+        self.calls = 0
+
+    async def evaluate(self, case, itinerary_output):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError()
         return score_judge_output(valid_judge_output())
 
 
@@ -267,6 +331,88 @@ class TestJudgeRunner(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["summary"]["hard_constraint_pass_rate"], 1.0)
         self.assertEqual(report["summary"]["fatal_error_rate"], 0.0)
         self.assertEqual(report["summary"]["qualified_rate"], 1.0)
+
+    async def test_transient_timeout_retries_with_fresh_evaluation(self):
+        dataset = load_dataset()
+        source_report = {
+            "generated_at": "2026-07-29T00:00:00+00:00",
+            "runs": [{
+                "case_id": dataset["cases"][0]["id"],
+                "run_index": 1,
+                "output": json.dumps(
+                    valid_standard_output(),
+                    ensure_ascii=False,
+                ),
+            }],
+        }
+        judge = FlakyJudge()
+
+        report = await run_judging(
+            judge,
+            dataset,
+            source_report,
+            source_report["runs"],
+            max_attempts=2,
+            retry_delay_seconds=0,
+        )
+
+        self.assertEqual(judge.calls, 2)
+        self.assertEqual(report["summary"]["judged_runs"], 1)
+        self.assertEqual(report["runs"][0]["judge_attempts"], 2)
+
+    def test_resume_selects_errors_and_merges_replacements(self):
+        dataset = load_dataset()
+        source_run = {
+            "case_id": dataset["cases"][0]["id"],
+            "run_index": 1,
+            "output": json.dumps(
+                valid_standard_output(),
+                ensure_ascii=False,
+            ),
+        }
+        source_report = {
+            "generated_at": "2026-07-29T00:00:00+00:00",
+            "runs": [source_run],
+        }
+        previous_report = {
+            "dataset_version": dataset["version"],
+            "runs": [{
+                "case_id": source_run["case_id"],
+                "run_index": 1,
+                "judge_error": {"type": "ReadTimeout", "message": ""},
+            }],
+        }
+
+        selected = select_resume_runs([source_run], previous_report)
+        self.assertEqual(selected, [source_run])
+        self.assertTrue(judge_run_needs_retry(previous_report["runs"][0]))
+
+        scored = score_judge_output(valid_judge_output())
+        retry_report = {
+            "dataset_version": dataset["version"],
+            "runs": [{
+                "case_id": source_run["case_id"],
+                "run_index": 1,
+                "hard_evaluation": {
+                    "hard_constraints_passed": True,
+                    "fatal_errors": [],
+                },
+                "judge_evaluation": scored,
+                "judge_attempts": 2,
+                "fatal_error": False,
+                "passed": True,
+            }],
+        }
+
+        merged = merge_judge_reports(
+            previous_report,
+            retry_report,
+            source_report,
+        )
+
+        self.assertEqual(merged["summary"]["judged_runs"], 1)
+        self.assertEqual(merged["summary"]["judge_error_runs"], 0)
+        self.assertEqual(merged["runs"][0]["judge_attempts"], 2)
 
 
 if __name__ == "__main__":
