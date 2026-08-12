@@ -58,8 +58,12 @@ python -m evaluation.itinerary_quality.hard_rule_evaluator \
 
 ## RAG Evaluation
 
-```bash
-python evaluation/rag/run_local_retrieval_eval.py
+旧版 RAG 评估原型已移除。新版评估边界、数据集设计和指标定义见：
+
+```text
+evaluation/rag/rag_evaluation_spec.md
 ```
+
+新版数据集与运行入口将在评估规范校准后逐步实现，当前没有可执行的正式 RAG 基线命令。
 
 三个模块分别维护自己的数据集、评估器和结果，不合并成一个项目总分。

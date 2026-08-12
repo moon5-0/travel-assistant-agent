@@ -25,7 +25,7 @@ SYSTEM_CONFIG = {
 RAG_CONFIG = {
     "embedding_model": "data/models/bge-small-zh-v1.5",
     "top_k": 4,
-    # COSINE 相似度越高越相关；该初始阈值需用 evaluation/rag/rag_cases.json 实测校准。
+    # COSINE 相似度越高越相关；该初始阈值将在新版独立 RAG 评估集上重新校准。
     "similarity_threshold": 0.50,
     # 先多召回候选，再做阈值和重复片段过滤，最终最多保留 top_k 条。
     "candidate_multiplier": 3,
