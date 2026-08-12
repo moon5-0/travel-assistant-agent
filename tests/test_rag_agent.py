@@ -20,6 +20,7 @@ import json
 import sys
 import types
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -123,7 +124,12 @@ class FakeMilvusClient:
                     "id": 7,
                     "content": "一线城市住宿标准为每晚 500 元。",
                     "metadata": json.dumps(
-                        {"title": "住宿标准", "category": "travel_policy"},
+                        {
+                            "title": "住宿标准",
+                            "category": "travel_policy",
+                            "parent_doc": "01_travel_standards.txt",
+                            "chunk_index": 2,
+                        },
                         ensure_ascii=False,
                     ),
                 },
@@ -147,6 +153,13 @@ def make_agent(model=None):
     agent.similarity_threshold = 0.55
     agent.candidate_multiplier = 3
     agent.dedupe_similarity = 0.92
+    agent.retrieval_mode = "vector"
+    agent.vector_candidate_k = 3
+    agent.keyword_candidate_k = 3
+    agent.rrf_k = 60
+    agent.hybrid_similarity_floor = 0.43
+    agent._lexical_documents = None
+    agent._lexical_index = None
     agent.skill_loader = FakeSkillLoader()
     return agent
 
@@ -236,9 +249,79 @@ class TestRAGKnowledgeAgent(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0]["id"], 7)
         self.assertEqual(documents[0]["metadata"]["title"], "住宿标准")
+        self.assertEqual(documents[0]["metadata"]["chunk_index"], 2)
         self.assertEqual(documents[0]["score"], 0.92)
         self.assertEqual(documents[0]["distance"], 0.92)
         self.assertEqual(agent.milvus_client.search_calls[0]["limit"], 3)
+
+    async def test_rrf_fusion_rewards_documents_found_by_both_retrievers(self):
+        agent = make_agent()
+        shared = {
+            "id": 2,
+            "content": "共享证据",
+            "metadata": {"parent_doc": "policy.txt", "chunk_index": 2},
+        }
+        vector_documents = [
+            {
+                "id": 1,
+                "content": "仅向量证据",
+                "metadata": {"parent_doc": "policy.txt", "chunk_index": 1},
+                "vector_score": 0.9,
+            },
+            {**shared, "vector_score": 0.8},
+        ]
+        keyword_documents = [
+            {**shared, "keyword_score": 8.0},
+        ]
+
+        fused = agent._rrf_fusion(vector_documents, keyword_documents)
+
+        self.assertEqual(fused[0]["id"], 2)
+        self.assertEqual(fused[0]["vector_rank"], 2)
+        self.assertEqual(fused[0]["keyword_rank"], 1)
+
+    async def test_bm25_prefers_chunk_containing_specific_query_terms(self):
+        agent = make_agent()
+        agent._lexical_documents = [
+            {"id": 1, "content": "酒店住宿标准与预订规定", "metadata": {}},
+            {"id": 2, "content": "报销申请需要上传发票影像", "metadata": {}},
+        ]
+        tokenized = [
+            agent._lexical_tokens(item["content"])
+            for item in agent._lexical_documents
+        ]
+        document_frequencies = Counter()
+        for tokens in tokenized:
+            document_frequencies.update(set(tokens))
+        lengths = [len(tokens) for tokens in tokenized]
+        agent._lexical_index = {
+            "tokens": tokenized,
+            "document_frequencies": document_frequencies,
+            "document_lengths": lengths,
+            "average_document_length": sum(lengths) / len(lengths),
+        }
+
+        ranked = agent._keyword_search("报销时怎么上传发票", limit=2)
+
+        self.assertEqual(ranked[0]["id"], 2)
+
+    async def test_static_rag_rejects_queries_that_require_live_data(self):
+        agent = make_agent()
+        agent.collection_name = "business_travel_knowledge"
+        agent.embedding_model = FakeEmbeddingModel()
+        agent.milvus_client = FakeMilvusClient()
+        agent._ensure_connection = Mock()
+
+        documents = agent.search_knowledge("现在还有多少高铁余票？")
+
+        self.assertEqual(documents, [])
+        self.assertEqual(agent.milvus_client.search_calls, [])
+
+    async def test_static_policy_with_time_limit_is_not_mistaken_for_live_data(self):
+        self.assertFalse(
+            RAGKnowledgeAgent._requires_live_data("出差结束后多少天内提交报销？")
+        )
+
 
     async def test_search_filters_low_scores_and_near_duplicate_chunks(self):
         class FilteringMilvusClient(FakeMilvusClient):

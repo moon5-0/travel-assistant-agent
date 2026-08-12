@@ -161,9 +161,7 @@ evaluation/
 │   ├── itinerary_quality_evaluation_spec.md
 │   └── itinerary_quality_cases.json
 └── rag/                                  # RAG 检索与生成评估
-    ├── rag_cases.json
-    ├── rag_evaluator.py
-    └── run_local_retrieval_eval.py
+    └── rag_evaluation_spec.md             # 新版评估规范；数据集和执行器待实现
 ```
 
 ## 7. 使用方式

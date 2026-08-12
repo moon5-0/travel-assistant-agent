@@ -14,9 +14,6 @@ project_root = current_dir.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from config import LLM_CONFIG
-from agentscope.model import OpenAIChatModel
-
 # 动态加载同目录下的 agent.py
 def load_rag_agent_class():
     agent_script = current_dir / "agent.py"
@@ -160,7 +157,10 @@ def load_documents_from_directory(directory_path: str) -> List[Dict]:
                         "source": "商旅知识库文档",
                         "file_path": str(file_path),
                         "version": "2024版",
-                        "parent_doc": file_path.name
+                        "parent_doc": file_path.name,
+                        # 稳定证据标识：评估时使用 parent_doc + chunk_index
+                        # 判断是否召回人工标注的正确知识块。
+                        "chunk_index": i + 1,
                     }
                 }
                 documents.append(document)
@@ -183,20 +183,6 @@ def main():
 
     rag_agent = None
     try:
-        # 创建模型
-        print("1. 创建模型...")
-        model = OpenAIChatModel(
-            model_name=LLM_CONFIG["model_name"],
-            api_key=LLM_CONFIG["api_key"],
-            client_kwargs={
-                "base_url": LLM_CONFIG["base_url"],
-            },
-            temperature=LLM_CONFIG.get("temperature", 0.7),
-            max_tokens=LLM_CONFIG.get("max_tokens", 2000),
-        )
-        print("✓ 模型创建成功")
-        print()
-
         # 定义路径
         skill_root = current_dir.parent
         knowledge_base_path = skill_root / "data" / "rag_knowledge"
@@ -206,11 +192,12 @@ def main():
         knowledge_base_path.mkdir(parents=True, exist_ok=True)
         
         # 创建RAG Agent
-        print("2. 初始化RAG Agent...")
+        print("1. 初始化RAG Agent...")
         print(f"   知识库路径: {knowledge_base_path}")
         rag_agent = RAGKnowledgeAgent(
             name="RAGKnowledgeAgent",
-            model=model,
+            # 知识库重建只需要 Embedding 与 Milvus，不调用回答 LLM。
+            model=None,
             knowledge_base_path=str(knowledge_base_path),
             collection_name="business_travel_knowledge",
             top_k=4
@@ -224,7 +211,7 @@ def main():
         print()
 
         # 从文件加载文档
-        print(f"3. 从 {documents_dir} 加载文档...")
+        print(f"2. 从 {documents_dir} 加载文档...")
         documents = load_documents_from_directory(str(documents_dir))
 
         if not documents:
@@ -235,7 +222,7 @@ def main():
         print()
 
         # 添加文档到RAG知识库
-        print("4. 将文档添加到RAG知识库...")
+        print("3. 将文档添加到RAG知识库...")
         
         # 在添加之前，先清空旧的 collection（如果只是追加的话，ID会冲突，这里我们假设是从头开始）
         # RAGKnowledgeAgent 目前的实现是直接 insert。
@@ -265,7 +252,7 @@ def main():
         print()
 
         # 获取统计信息
-        print("5. 知识库统计信息:")
+        print("4. 知识库统计信息:")
         stats = rag_agent.get_stats()
         if stats["status"] == "success":
             print(f"   - Collection: {stats.get('collection_name')}")
@@ -274,7 +261,7 @@ def main():
         print()
 
         # 测试检索
-        print("6. 测试知识检索...")
+        print("5. 测试知识检索...")
         test_queries = [
             "出差住宿标准是多少？",
             "航班延误了怎么办？",

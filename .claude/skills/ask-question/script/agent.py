@@ -4,13 +4,14 @@ RAG知识库智能体 RAGKnowledgeAgent
 
 核心功能：
 1. 知识库构建：将商旅相关文档向量化并存储到Milvus Lite
-2. 语义检索：根据用户查询检索最相关的知识片段
+2. 混合检索：通过 BGE 向量和 BM25 召回，并使用 RRF 融合知识片段
 3. 知识问答：结合检索到的知识和LLM生成准确答案
 4. 知识管理：支持添加、更新、删除知识库内容
 
 技术栈：
 - Milvus Lite: 轻量级向量数据库（本地存储）
 - sentence-transformers: 文本向量化模型
+- BM25 + RRF: 关键词召回与双路排名融合
 - LLM: 用户配置的豆包模型用于生成答案
 
 安装：
@@ -19,11 +20,15 @@ pip install milvus sentence-transformers
 from agentscope.agent import AgentBase
 from agentscope.message import Msg
 from typing import Optional, Union, List, Dict
+from collections import Counter
 from difflib import SequenceMatcher
 import json
 import logging
+import math
 import os
 from pathlib import Path
+import re
+import unicodedata
 
 # Add project root to sys.path
 import sys
@@ -62,6 +67,11 @@ class RAGKnowledgeAgent(AgentBase):
         similarity_threshold: Optional[float] = None,
         candidate_multiplier: Optional[int] = None,
         dedupe_similarity: Optional[float] = None,
+        retrieval_mode: Optional[str] = None,
+        vector_candidate_k: Optional[int] = None,
+        keyword_candidate_k: Optional[int] = None,
+        rrf_k: Optional[int] = None,
+        hybrid_similarity_floor: Optional[float] = None,
         **kwargs
     ):
         super().__init__()
@@ -103,16 +113,55 @@ class RAGKnowledgeAgent(AgentBase):
                 if dedupe_similarity is not None
                 else RAG_CONFIG.get("dedupe_similarity", 0.92)
             )
+            retrieval_mode = retrieval_mode or RAG_CONFIG.get("retrieval_mode", "hybrid")
+            vector_candidate_k = (
+                vector_candidate_k
+                if vector_candidate_k is not None
+                else RAG_CONFIG.get("vector_candidate_k", 20)
+            )
+            keyword_candidate_k = (
+                keyword_candidate_k
+                if keyword_candidate_k is not None
+                else RAG_CONFIG.get("keyword_candidate_k", 20)
+            )
+            rrf_k = rrf_k if rrf_k is not None else RAG_CONFIG.get("rrf_k", 60)
+            hybrid_similarity_floor = (
+                hybrid_similarity_floor
+                if hybrid_similarity_floor is not None
+                else RAG_CONFIG.get("hybrid_similarity_floor", 0.43)
+            )
         except Exception:
             top_k = top_k if top_k is not None else 4
             similarity_threshold = similarity_threshold if similarity_threshold is not None else 0.50
             candidate_multiplier = candidate_multiplier if candidate_multiplier is not None else 3
             dedupe_similarity = dedupe_similarity if dedupe_similarity is not None else 0.92
+            retrieval_mode = retrieval_mode or "hybrid"
+            vector_candidate_k = vector_candidate_k if vector_candidate_k is not None else 20
+            keyword_candidate_k = keyword_candidate_k if keyword_candidate_k is not None else 20
+            rrf_k = rrf_k if rrf_k is not None else 60
+            hybrid_similarity_floor = (
+                hybrid_similarity_floor
+                if hybrid_similarity_floor is not None
+                else 0.43
+            )
 
         self.top_k = max(1, int(top_k))
         self.similarity_threshold = float(similarity_threshold)
         self.candidate_multiplier = max(1, int(candidate_multiplier))
         self.dedupe_similarity = min(1.0, max(0.0, float(dedupe_similarity)))
+        if retrieval_mode not in {"vector", "hybrid"}:
+            raise ValueError("retrieval_mode must be 'vector' or 'hybrid'")
+        self.retrieval_mode = retrieval_mode
+        self.vector_candidate_k = max(self.top_k, int(vector_candidate_k))
+        self.keyword_candidate_k = max(self.top_k, int(keyword_candidate_k))
+        self.rrf_k = max(1, int(rrf_k))
+        self.hybrid_similarity_floor = min(
+            self.similarity_threshold,
+            float(hybrid_similarity_floor),
+        )
+        # BM25 语料延迟加载。知识库新增或重建后会主动清空缓存。
+        self._lexical_documents = None
+        self._lexical_index = None
 
         # 若配置的是本地路径且存在，则从本地加载，否则按模型 ID 使用（会联网）
         model_path_or_id = embedding_model
@@ -136,7 +185,19 @@ class RAGKnowledgeAgent(AgentBase):
         milvus_db_path = str(self.knowledge_base_path / "milvus_lite.db")
         logger.info(f"Initializing Milvus Lite at: {milvus_db_path}")
 
-        self.milvus_client = MilvusClient(milvus_db_path, grpc_options={"keepalive_time": _GRPC_MAX_MS, "keepalive_timeout": "20000", "keepalive_permit_without_calls": "0", "http2_min_recv_ping_interval_without_data": _GRPC_MAX_MS, "http2_min_ping_interval_without_data": _GRPC_MAX_MS})
+        self.milvus_client = MilvusClient(
+            milvus_db_path,
+            # 新版 pymilvus 会尝试从本地绝对路径中推断数据库名；显式指定
+            # default，避免把路径中的 Users 等目录名误当作 Milvus 数据库。
+            db_name="default",
+            grpc_options={
+                "keepalive_time": _GRPC_MAX_MS,
+                "keepalive_timeout": "20000",
+                "keepalive_permit_without_calls": "0",
+                "http2_min_recv_ping_interval_without_data": _GRPC_MAX_MS,
+                "http2_min_ping_interval_without_data": _GRPC_MAX_MS,
+            },
+        )
         self._client_created_at = None  # 用于追踪客户端创建时间
 
         # 检查collection是否存在
@@ -152,6 +213,9 @@ class RAGKnowledgeAgent(AgentBase):
                 auto_id=False,
             )
             logger.info(f"Created new collection: {collection_name}")
+        # Milvus Lite 3.x 在新进程中打开持久化 Collection 时默认可能处于
+        # released 状态；显式 load 后才能执行 search/query。
+        self.milvus_client.load_collection(collection_name)
 
         self.initialized = True
         self._milvus_db_path = milvus_db_path  # 保存路径用于重连
@@ -173,7 +237,12 @@ class RAGKnowledgeAgent(AgentBase):
                         pass
 
                 # 重新创建客户端
-                self.milvus_client = MilvusClient(self._milvus_db_path)
+                self.milvus_client = MilvusClient(
+                    self._milvus_db_path,
+                    db_name="default",
+                )
+                if self.milvus_client.has_collection(self.collection_name):
+                    self.milvus_client.load_collection(self.collection_name)
                 logger.info("Milvus client reconnected successfully")
             except Exception as reconnect_error:
                 logger.error(f"Failed to reconnect Milvus: {reconnect_error}")
@@ -224,6 +293,9 @@ class RAGKnowledgeAgent(AgentBase):
                 collection_name=self.collection_name,
                 data=data_to_insert
             )
+            # 新文档写入后使内存 BM25 语料失效，下次检索会自动重建索引。
+            self._lexical_documents = None
+            self._lexical_index = None
 
             # 获取总数
             stats = self.milvus_client.get_collection_stats(self.collection_name)
@@ -257,6 +329,206 @@ class RAGKnowledgeAgent(AgentBase):
                 return True
         return False
 
+    @staticmethod
+    def _decode_metadata(value) -> Dict:
+        """兼容 Milvus 中 JSON 字符串与字典两种 metadata 格式。"""
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return {}
+        return {}
+
+    @staticmethod
+    def _lexical_tokens(text: str) -> List[str]:
+        """生成通用词项：英文/数字词，以及中文单字和相邻双字。
+
+        不维护面向评估题的同义词表。中文双字能够保留“报销、酒店”等
+        词组，单字则让较短表达仍有机会匹配，常见虚词会被统一过滤。
+        """
+        normalized = unicodedata.normalize("NFKC", str(text or "")).lower()
+        latin_tokens = re.findall(r"[a-z0-9]+", normalized)
+        han_chars = re.findall(r"[\u4e00-\u9fff]", normalized)
+        stop_chars = set("的了是在和与及或把被呢吗呀啊这那一个中内时后前")
+        han_unigrams = [char for char in han_chars if char not in stop_chars]
+        han_bigrams = [
+            first + second
+            for first, second in zip(han_chars, han_chars[1:])
+            if first not in stop_chars and second not in stop_chars
+        ]
+        return latin_tokens + han_unigrams + han_bigrams
+
+    @staticmethod
+    def _requires_live_data(query: str) -> bool:
+        """判断问题是否依赖知识库不可能持有的动态状态。
+
+        这里判断的是“信息类型”而非某道评估题：实时天气、库存余量、
+        即时价格和交通状态应由 InformationQueryAgent 查询，静态政策库
+        即便碰巧含有相似关键词也不能回答。
+        """
+        normalized = unicodedata.normalize("NFKC", str(query or "")).lower()
+        explicit_live_terms = (
+            "余票", "实时天气", "天气怎么样", "天气如何", "气温多少",
+            "会下雨", "是否下雨", "实时路况", "航班状态", "车次状态",
+            "延误情况", "还有多少张", "库存还有", "剩余库存",
+        )
+        if any(term in normalized for term in explicit_live_terms):
+            return True
+        time_markers = ("实时", "当前", "现在", "今天", "明天", "后天", "最新")
+        dynamic_subjects = (
+            "天气", "气温", "降雨", "票价", "现价", "报价", "库存",
+            "航班", "车次", "延误", "路况",
+        )
+        return (
+            any(marker in normalized for marker in time_markers)
+            and any(subject in normalized for subject in dynamic_subjects)
+        )
+
+    def _load_lexical_corpus(self) -> List[Dict]:
+        """从 Milvus metadata/content 加载小型 BM25 语料并缓存在内存中。"""
+        if self._lexical_documents is not None:
+            return self._lexical_documents
+        rows = self.milvus_client.query(
+            collection_name=self.collection_name,
+            filter="id >= 0",
+            output_fields=["id", "content", "metadata"],
+            limit=10000,
+        )
+        documents = []
+        tokenized_documents = []
+        for row in rows or []:
+            content = str(row.get("content", "") or "")
+            if not content:
+                continue
+            documents.append({
+                "id": row.get("id"),
+                "content": content,
+                "metadata": self._decode_metadata(row.get("metadata")),
+            })
+            tokenized_documents.append(self._lexical_tokens(content))
+
+        document_frequencies = Counter()
+        document_lengths = []
+        for tokens in tokenized_documents:
+            document_frequencies.update(set(tokens))
+            document_lengths.append(len(tokens))
+        self._lexical_documents = documents
+        self._lexical_index = {
+            "tokens": tokenized_documents,
+            "document_frequencies": document_frequencies,
+            "document_lengths": document_lengths,
+            "average_document_length": (
+                sum(document_lengths) / len(document_lengths)
+                if document_lengths
+                else 0.0
+            ),
+        }
+        return documents
+
+    def _keyword_search(self, query: str, limit: int) -> List[Dict]:
+        """在当前知识块上执行标准 BM25 排名。"""
+        documents = self._load_lexical_corpus()
+        if not documents or not self._lexical_index:
+            return []
+        query_tokens = set(self._lexical_tokens(query))
+        if not query_tokens:
+            return []
+
+        index = self._lexical_index
+        corpus_size = len(documents)
+        average_length = index["average_document_length"] or 1.0
+        k1, b = 1.5, 0.75
+        ranked = []
+        for position, tokens in enumerate(index["tokens"]):
+            frequencies = Counter(tokens)
+            document_length = index["document_lengths"][position]
+            score = 0.0
+            for token in query_tokens:
+                frequency = frequencies.get(token, 0)
+                if not frequency:
+                    continue
+                document_frequency = index["document_frequencies"].get(token, 0)
+                inverse_document_frequency = math.log(
+                    1 + (corpus_size - document_frequency + 0.5)
+                    / (document_frequency + 0.5)
+                )
+                denominator = frequency + k1 * (
+                    1 - b + b * document_length / average_length
+                )
+                score += inverse_document_frequency * (
+                    frequency * (k1 + 1) / denominator
+                )
+            if score > 0:
+                document = dict(documents[position])
+                document["keyword_score"] = score
+                ranked.append(document)
+        ranked.sort(key=lambda item: item["keyword_score"], reverse=True)
+        return ranked[:limit]
+
+    def _vector_search(self, query: str, limit: int) -> List[Dict]:
+        """返回未做阈值过滤的向量候选，供纯向量或融合检索使用。"""
+        query_embedding = self.embedding_model.encode(query).tolist()
+        results = self.milvus_client.search(
+            collection_name=self.collection_name,
+            data=[query_embedding],
+            limit=limit,
+            output_fields=["id", "content", "metadata"],
+        )
+        candidates = []
+        if results and results[0]:
+            for hit in results[0]:
+                entity = hit.get("entity", {})
+                candidates.append({
+                    "id": entity.get("id", hit.get("id")),
+                    "content": entity.get("content", ""),
+                    "metadata": self._decode_metadata(entity.get("metadata")),
+                    "vector_score": float(hit.get("distance", 0.0) or 0.0),
+                })
+        return candidates
+
+    @staticmethod
+    def _document_key(document: Dict):
+        metadata = document.get("metadata") or {}
+        source = metadata.get("parent_doc")
+        chunk_index = metadata.get("chunk_index")
+        if source and chunk_index is not None:
+            return str(source), int(chunk_index)
+        return "id", str(document.get("id"))
+
+    def _rrf_fusion(
+        self,
+        vector_documents: List[Dict],
+        keyword_documents: List[Dict],
+    ) -> List[Dict]:
+        """使用 Reciprocal Rank Fusion 合并语义和关键词候选。"""
+        fused = {}
+        for source_name, documents in (
+            ("vector", vector_documents),
+            ("keyword", keyword_documents),
+        ):
+            for rank, document in enumerate(documents, start=1):
+                key = self._document_key(document)
+                item = fused.setdefault(key, dict(document))
+                item["rrf_score"] = item.get("rrf_score", 0.0) + 1 / (
+                    self.rrf_k + rank
+                )
+                item[f"{source_name}_rank"] = rank
+                if source_name == "vector":
+                    item["vector_score"] = document.get("vector_score", 0.0)
+                else:
+                    item["keyword_score"] = document.get("keyword_score", 0.0)
+        return sorted(
+            fused.values(),
+            key=lambda item: (
+                item.get("rrf_score", 0.0),
+                item.get("vector_score", 0.0),
+            ),
+            reverse=True,
+        )
+
     def search_knowledge(self, query: str, top_k: Optional[int] = None) -> List[Dict]:
         """
         检索知识库
@@ -268,73 +540,79 @@ class RAGKnowledgeAgent(AgentBase):
         Returns:
             检索结果列表
         """
+        self.last_search_error = None
         if not self.initialized or not str(query).strip():
             return []
 
         try:
             # 确保连接正常
             self._ensure_connection()
+            if self._requires_live_data(query):
+                logger.info("Skip static RAG retrieval for live-data query=%r", query[:50])
+                return []
             k = top_k if top_k is not None else self.top_k
             k = max(1, int(k))
-            candidate_limit = max(k, k * self.candidate_multiplier)
-
-            # 生成查询向量
-            query_embedding = self.embedding_model.encode(query).tolist()
-
-            # 先扩大候选集，之后再做阈值过滤和重复片段过滤。
-            results = self.milvus_client.search(
-                collection_name=self.collection_name,
-                data=[query_embedding],
-                limit=candidate_limit,
-                output_fields=["id", "content", "metadata"]
+            vector_limit = max(
+                self.vector_candidate_k,
+                k * self.candidate_multiplier,
             )
+            vector_documents = self._vector_search(query, vector_limit)
+            if self.retrieval_mode == "hybrid":
+                keyword_documents = self._keyword_search(
+                    query,
+                    max(self.keyword_candidate_k, k * self.candidate_multiplier),
+                )
+                candidates = self._rrf_fusion(vector_documents, keyword_documents)
+            else:
+                candidates = vector_documents
 
-            # COSINE 指标下 Milvus hit.distance 表示相似度分数，越高越相关。
             retrieved_docs = []
             accepted_contents: List[str] = []
-            if results and len(results) > 0:
-                for hit in results[0]:
-                    entity = hit.get("entity", {})
-                    score = float(hit.get("distance", 0.0) or 0.0)
-                    if score < self.similarity_threshold:
-                        continue
-
-                    content = entity.get("content", "")
-                    if self._is_duplicate_content(content, accepted_contents):
-                        continue
-
-                    metadata_str = entity.get("metadata", "{}")
-                    try:
-                        metadata = (
-                            json.loads(metadata_str)
-                            if isinstance(metadata_str, str)
-                            else dict(metadata_str or {})
-                        )
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        metadata = {}
-
-                    retrieved_docs.append({
-                        'id': entity.get("id", ""),
-                        'content': content,
-                        'metadata': metadata,
-                        'score': score,
-                        # 兼容旧调用；COSINE 下该字段同样是“越高越相关”的分数。
-                        'distance': score,
-                    })
-                    accepted_contents.append(self._normalize_content(content))
-                    if len(retrieved_docs) >= k:
-                        break
+            for candidate in candidates:
+                vector_score = float(candidate.get("vector_score", 0.0) or 0.0)
+                keyword_rank = candidate.get("keyword_rank")
+                # 纯语义结果沿用原阈值；关键词证据只有在语义也达到较宽松
+                # 下限时才能补召回，避免只凭常见词回答无关问题。
+                accepted_by_vector = vector_score >= self.similarity_threshold
+                accepted_by_hybrid = (
+                    self.retrieval_mode == "hybrid"
+                    and keyword_rank is not None
+                    and vector_score >= self.hybrid_similarity_floor
+                )
+                if not (accepted_by_vector or accepted_by_hybrid):
+                    continue
+                content = candidate.get("content", "")
+                if self._is_duplicate_content(content, accepted_contents):
+                    continue
+                fusion_score = candidate.get("rrf_score", vector_score)
+                retrieved_docs.append({
+                    'id': candidate.get("id", ""),
+                    'content': content,
+                    'metadata': candidate.get("metadata", {}),
+                    'score': fusion_score,
+                    'distance': vector_score,
+                    'vector_score': vector_score,
+                    'keyword_score': candidate.get("keyword_score"),
+                    'vector_rank': candidate.get("vector_rank"),
+                    'keyword_rank': keyword_rank,
+                    'rrf_score': candidate.get("rrf_score"),
+                })
+                accepted_contents.append(self._normalize_content(content))
+                if len(retrieved_docs) >= k:
+                    break
 
             logger.info(
-                "Retrieved %d documents for query=%r (threshold=%.3f, candidates=%d)",
+                "Retrieved %d documents for query=%r (mode=%s, threshold=%.3f, vector_candidates=%d)",
                 len(retrieved_docs),
                 query[:50],
+                self.retrieval_mode,
                 self.similarity_threshold,
-                candidate_limit,
+                len(vector_documents),
             )
             return retrieved_docs
 
         except Exception as e:
+            self.last_search_error = f"{type(e).__name__}: {e}"
             logger.error(f"Error searching knowledge: {e}")
             return []
 

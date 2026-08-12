@@ -24,11 +24,18 @@ SYSTEM_CONFIG = {
 # RAG 知识库：嵌入模型（本地路径，无需连 HuggingFace）
 RAG_CONFIG = {
     "embedding_model": "data/models/bge-small-zh-v1.5",
+    # 语义向量与 BM25 分别召回候选，再使用 RRF 按排名融合。
+    "retrieval_mode": "hybrid",
     "top_k": 4,
-    # COSINE 相似度越高越相关；该初始阈值需用 evaluation/rag/rag_cases.json 实测校准。
+    # COSINE 相似度越高越相关；该初始阈值将在新版独立 RAG 评估集上重新校准。
     "similarity_threshold": 0.50,
     # 先多召回候选，再做阈值和重复片段过滤，最终最多保留 top_k 条。
     "candidate_multiplier": 3,
+    "vector_candidate_k": 20,
+    "keyword_candidate_k": 20,
+    "rrf_k": 60,
+    # BM25 命中时允许语义分略低于主阈值，但仍保留语义下限，避免关键词误召回。
+    "hybrid_similarity_floor": 0.43,
     "dedupe_similarity": 0.92,
 }
 

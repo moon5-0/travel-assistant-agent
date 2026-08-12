@@ -1,0 +1,249 @@
+{
+  "dataset_version": "0.2.0-dev",
+  "purpose": "RAG证据级检索开发集，仅用于评估器校准和检索调试，不作为最终测试成绩。",
+  "knowledge_base": {
+    "document_directory": ".claude/skills/ask-question/data/documents",
+    "chunking": {
+      "max_chars": 600,
+      "overlap": 100,
+      "implementation": ".claude/skills/ask-question/script/init_knowledge_base.py"
+    }
+  },
+  "scoring_scope": "retrieval_only",
+  "case_count": 15,
+  "cases": [
+    {
+      "id": "hotel_limit_beijing_paraphrase",
+      "category": "single_fact",
+      "question": "去北京见客户，酒店一晚控制在多少以内？",
+      "should_answer": true,
+      "risk_type": "similar_policy_disambiguation",
+      "reference_answer": "北京适用一线城市住宿标准，每晚不超过500元。",
+      "expected_sources": ["01_travel_standards.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "01_travel_standards.txt",
+          "chunk_index": 2
+        }
+      ]
+    },
+    {
+      "id": "hotel_highland_uplift",
+      "category": "single_fact",
+      "question": "去西藏出差，住宿标准可以在普通标准上增加多少？",
+      "should_answer": true,
+      "risk_type": "special_region_policy",
+      "reference_answer": "西藏属于特殊高原地区，住宿标准可上浮20%。",
+      "expected_sources": ["01_travel_standards.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "01_travel_standards.txt",
+          "chunk_index": 2
+        }
+      ]
+    },
+    {
+      "id": "international_long_flight_cabin",
+      "category": "paraphrase",
+      "question": "国际出差的航程超过四小时，按规定最高能订哪类舱位？",
+      "should_answer": true,
+      "risk_type": "near_policy_disambiguation",
+      "reference_answer": "国际长途航线超过4小时，可以预订高端经济舱。",
+      "expected_sources": ["01_travel_standards.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "01_travel_standards.txt",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "reimbursement_deadline_and_overdue",
+      "category": "multi_fact",
+      "question": "出差结束后多久内要报销？超过期限还想提交需要怎么处理？",
+      "should_answer": true,
+      "risk_type": "multi_fact_same_chunk",
+      "reference_answer": "应在出差结束后30个自然日内提交；超过30天需要提供书面说明并经主管审批。",
+      "expected_sources": ["02_reimbursement_policy.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "02_reimbursement_policy.txt",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "lost_invoice_proof",
+      "category": "paraphrase",
+      "question": "差旅发票找不到了，还能用什么材料补救？",
+      "should_answer": true,
+      "risk_type": "semantic_recall",
+      "reference_answer": "需提供遗失说明和辅助证明，例如银行流水或订单截图。",
+      "expected_sources": ["02_reimbursement_policy.txt"],
+      "evidence_match": "any",
+      "gold_evidence": [
+        {
+          "source": "02_reimbursement_policy.txt",
+          "chunk_index": 2
+        },
+        {
+          "source": "02_reimbursement_policy.txt",
+          "chunk_index": 5
+        }
+      ]
+    },
+    {
+      "id": "hotel_minibar_reimbursement",
+      "category": "single_fact",
+      "question": "出差住酒店时喝了房间迷你吧的饮料，这笔钱公司报吗？",
+      "should_answer": true,
+      "risk_type": "personal_expense_policy",
+      "reference_answer": "不报销。酒店minibar属于个人消费。",
+      "expected_sources": ["02_reimbursement_policy.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "02_reimbursement_policy.txt",
+          "chunk_index": 3
+        }
+      ]
+    },
+    {
+      "id": "domestic_and_international_booking_lead_time",
+      "category": "multi_fact",
+      "question": "国内和国际机票通常分别提前多少天订比较合适？",
+      "should_answer": true,
+      "risk_type": "near_policy_disambiguation",
+      "reference_answer": "国内机票建议提前7至14天，国际机票建议提前21至30天预订。",
+      "expected_sources": ["03_booking_guide.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "03_booking_guide.txt",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "private_car_reimbursement_boundary",
+      "category": "multi_fact",
+      "question": "自驾出差是否允许？哪些车辆相关费用能报，哪些不能报？",
+      "should_answer": true,
+      "risk_type": "policy_boundary",
+      "reference_answer": "可以自驾，但需在申请中注明原因；油费、过路费和停车费可凭发票报销，车辆折旧、保养和保险不报销。",
+      "expected_sources": ["04_faq.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "04_faq.txt",
+          "chunk_index": 2
+        }
+      ]
+    },
+    {
+      "id": "flight_delay_over_four_hours",
+      "category": "multi_fact",
+      "question": "航班耽误四个多小时了，我应该怎样处理并保留哪些材料？",
+      "should_answer": true,
+      "risk_type": "emergency_procedure",
+      "reference_answer": "延误超过4小时可考虑改签，并应保留延误证明、改签凭证以及合理住宿、餐饮费用的发票。",
+      "expected_sources": ["05_emergency_procedures.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "05_emergency_procedures.txt",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "platform_application_to_reimbursement",
+      "category": "multi_evidence",
+      "question": "阿里商旅平台从申请到报销能在线处理哪些环节？其中报销模块具体支持什么？",
+      "should_answer": true,
+      "risk_type": "multi_chunk_recall",
+      "reference_answer": "平台支持差旅申请、机票/火车票/酒店/租车预订、行程管理和费用报销；报销模块支持在线提交申请、关联差旅申请和订单、上传发票影像、查看审批进度及管理电子发票。",
+      "expected_sources": ["06_platform_guide.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "06_platform_guide.txt",
+          "chunk_index": 1
+        },
+        {
+          "source": "06_platform_guide.txt",
+          "chunk_index": 2
+        }
+      ]
+    },
+    {
+      "id": "beijing_two_airports_transport",
+      "category": "multi_fact",
+      "question": "北京两个主要机场分别叫什么，坐轨道交通进城有什么选择？",
+      "should_answer": true,
+      "risk_type": "multi_entity_same_chunk",
+      "reference_answer": "北京主要有首都国际机场和大兴国际机场；首都机场可乘机场快轨，大兴机场可乘大兴机场线。",
+      "expected_sources": ["07_city_specific_tips.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "07_city_specific_tips.txt",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "green_transport_distance_rules",
+      "category": "multi_fact",
+      "question": "公司绿色出行建议里，500公里、800公里和300公里分别怎么选择交通？",
+      "should_answer": true,
+      "risk_type": "similar_numeric_facts",
+      "reference_answer": "500公里以内优先高铁；时间充裕时800公里以内也建议高铁；300公里以内建议高铁或汽车。",
+      "expected_sources": ["08_environmental_initiatives.txt"],
+      "evidence_match": "all",
+      "gold_evidence": [
+        {
+          "source": "08_environmental_initiatives.txt",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "negative_realtime_weather",
+      "category": "negative",
+      "question": "杭州明天下午会不会下雨？",
+      "should_answer": false,
+      "risk_type": "realtime_out_of_scope",
+      "reference_answer": "知识库不包含实时天气，应交给实时查询能力。",
+      "expected_sources": [],
+      "evidence_match": "none",
+      "gold_evidence": []
+    },
+    {
+      "id": "negative_realtime_ticket_inventory",
+      "category": "negative",
+      "question": "现在苏州到北京的高铁还有多少张二等座余票？",
+      "should_answer": false,
+      "risk_type": "realtime_out_of_scope",
+      "reference_answer": "知识库不包含实时车票库存，应交给实时查询或预订平台。",
+      "expected_sources": [],
+      "evidence_match": "none",
+      "gold_evidence": []
+    },
+    {
+      "id": "negative_programming_question",
+      "category": "negative",
+      "question": "Python装饰器为什么可以在不修改原函数的情况下增加功能？",
+      "should_answer": false,
+      "risk_type": "domain_out_of_scope",
+      "reference_answer": "该问题不属于企业差旅知识库范围。",
+      "expected_sources": [],
+      "evidence_match": "none",
+      "gold_evidence": []
+    }
+  ]
+}
