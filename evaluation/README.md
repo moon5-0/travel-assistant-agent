@@ -58,12 +58,40 @@ python -m evaluation.itinerary_quality.hard_rule_evaluator \
 
 ## RAG Evaluation
 
-旧版 RAG 评估原型已移除。新版评估边界、数据集设计和指标定义见：
+旧版 RAG 评估原型已移除。v0.2 当前只建设检索质量评估；回答质量与端到端评估暂列为后续方向。新版评估边界、数据集设计和指标定义见：
 
 ```text
 evaluation/rag/rag_evaluation_spec.md
 ```
 
-新版数据集与运行入口将在评估规范校准后逐步实现，当前没有可执行的正式 RAG 基线命令。
+当前已实现证据级检索开发集、真实 Milvus Lite 运行入口，以及 BGE 向量 + BM25 + RRF 混合检索；独立测试集将在开发集校准后另行冻结。
+
+校验 RAG 检索开发集和执行规模，不加载 BGE/Milvus：
+
+```bash
+python evaluation/rag/run_rag_retrieval_eval.py --dry-run
+```
+
+在真实 BGE + Milvus Lite 链路上运行15道开发题：
+
+```bash
+python evaluation/rag/run_rag_retrieval_eval.py
+```
+
+只运行一个指定 Case：
+
+```bash
+python evaluation/rag/run_rag_retrieval_eval.py \
+  --case hotel_limit_beijing_paraphrase
+```
+
+原始报告写入 `rag/results/` 并由 Git 忽略。当前结果只作为开发集基线，不能作为独立测试集最终成绩。
+
+可提交、可追踪的阶段结果归档在：
+
+```text
+evaluation/rag/reports/v0.1.0-vector-retrieval-baseline.md
+evaluation/rag/reports/v0.2.0-hybrid-retrieval-optimization.md
+```
 
 三个模块分别维护自己的数据集、评估器和结果，不合并成一个项目总分。
