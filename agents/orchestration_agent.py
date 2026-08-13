@@ -21,6 +21,8 @@ import logging
 import asyncio
 import re
 
+from context.session_store import InMemorySessionStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,8 +109,26 @@ class OrchestrationAgent(AgentBase):
         self.name = name
         self.agent_registry = agent_registry or {}
         self.memory_manager = memory_manager
-        # 保存当前会话中尚未补全的结构化行程信息。
-        self._pending_trip_data: Dict[str, Any] = {}
+        # 正式链路由 MemoryManager 统一管理会话状态。独立构造调度器的离线
+        # 测试仍可使用这个 Store 降级，但调度器不再维护裸字典状态。
+        self._standalone_session_store = InMemorySessionStore()
+        self._standalone_session_id = f"orchestrator:{id(self)}"
+
+    def _read_pending_trip(self) -> Dict[str, Any]:
+        if self.memory_manager and hasattr(self.memory_manager, "get_pending_trip"):
+            return self.memory_manager.get_pending_trip()
+        return self._standalone_session_store.get_pending_trip(
+            self._standalone_session_id
+        )
+
+    def _write_pending_trip(self, trip_data: Dict[str, Any]) -> None:
+        if self.memory_manager and hasattr(self.memory_manager, "save_pending_trip"):
+            self.memory_manager.save_pending_trip(trip_data)
+            return
+        self._standalone_session_store.save_pending_trip(
+            self._standalone_session_id,
+            trip_data,
+        )
 
     def register_agent(self, agent_name: str, agent: AgentBase):
         """注册子智能体"""
@@ -123,15 +143,20 @@ class OrchestrationAgent(AgentBase):
 
     def clear_pending_trip(self) -> None:
         """清除当前会话中尚未完成的行程信息。"""
-        self._pending_trip_data.clear()
+        if self.memory_manager and hasattr(self.memory_manager, "clear_pending_trip"):
+            self.memory_manager.clear_pending_trip()
+            return
+        self._standalone_session_store.clear_pending_trip(
+            self._standalone_session_id
+        )
 
     def get_pending_trip(self) -> Dict[str, Any]:
         """返回待补全行程的副本，供状态展示和执行轨迹采集使用。"""
-        return dict(self._pending_trip_data)
+        return self._read_pending_trip()
 
     def restore_pending_trip(self, trip_data: Dict[str, Any]) -> None:
         """恢复待补全行程，供会话恢复和隔离评估环境初始化使用。"""
-        self._pending_trip_data = dict(trip_data or {})
+        self._write_pending_trip(dict(trip_data or {}))
 
     async def reply(self, x: Optional[Union[Msg, List[Msg]]] = None) -> Msg:
         """
@@ -277,7 +302,7 @@ class OrchestrationAgent(AgentBase):
             for item in results
         )
         if itinerary_completed:
-            self._pending_trip_data.clear()
+            self.clear_pending_trip()
 
         # 聚合结果
         final_result = self._aggregate_results(results, intention_data)
@@ -298,6 +323,7 @@ class OrchestrationAgent(AgentBase):
         original_user_input: str = "",
     ) -> None:
         """将本轮事项信息与上一轮待补全信息合并。"""
+        pending_trip_data = self._read_pending_trip()
         trip_fields = (
             "origin",
             "destination",
@@ -327,7 +353,7 @@ class OrchestrationAgent(AgentBase):
             # 日期允许从“明天、8月10日”等明确表达换算，但不能在用户和待补全
             # 草稿都没有日期时由模型默认成今天或明天。
             pending_has_start_date = bool(
-                self._pending_trip_data.get("start_date")
+                pending_trip_data.get("start_date")
             )
             if (
                 not pending_has_start_date
@@ -342,12 +368,12 @@ class OrchestrationAgent(AgentBase):
                 current_data["trip_purpose"] = None
 
             if (
-                not self._pending_trip_data.get("departure_time_window")
+                not pending_trip_data.get("departure_time_window")
                 and not self._has_departure_time_reference(original_user_input)
             ):
                 current_data["departure_time_window"] = None
             if (
-                not self._pending_trip_data.get("return_time_window")
+                not pending_trip_data.get("return_time_window")
                 and not self._has_return_time_reference(original_user_input)
             ):
                 current_data["return_time_window"] = None
@@ -368,14 +394,14 @@ class OrchestrationAgent(AgentBase):
                 ),
             ):
                 pending_has_booking = any(
-                    self._pending_trip_data.get(field)
+                    pending_trip_data.get(field)
                     for field in (status_field, detail_field)
                 )
                 if not pending_has_booking and direction not in transport_directions:
                     current_data[status_field] = None
                     current_data[detail_field] = None
             pending_has_hotel_booking = any(
-                self._pending_trip_data.get(field)
+                pending_trip_data.get(field)
                 for field in ("hotel_booking_status", "hotel_booking_details")
             )
             if (
@@ -397,7 +423,7 @@ class OrchestrationAgent(AgentBase):
                     current_data[detail_field] = None
 
             # 先保留上一轮的信息，再使用本轮非空字段覆盖。
-            merged_data = dict(self._pending_trip_data)
+            merged_data = dict(pending_trip_data)
 
             for field in trip_fields:
                 value = current_data.get(field)
@@ -419,11 +445,11 @@ class OrchestrationAgent(AgentBase):
             result["data"] = merged_data
 
             # 保存下来，供下一轮继续补充。
-            self._pending_trip_data = {
+            self._write_pending_trip({
                 field: merged_data.get(field)
                 for field in trip_fields
                 if merged_data.get(field) not in (None, "", [])
-            }
+            })
             break
 
     def _get_missing_trip_fields(

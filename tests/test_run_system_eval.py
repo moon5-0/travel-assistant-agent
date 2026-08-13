@@ -12,11 +12,7 @@ from evaluation.system.run_system_eval import (
 
 
 class FakeOrchestrator:
-    def __init__(self) -> None:
-        self.pending_trip = None
-
-    def restore_pending_trip(self, trip_data):
-        self.pending_trip = dict(trip_data)
+    """seed_initial_state 兼容的占位对象；会话状态已归 MemoryManager。"""
 
 
 class TestRealSystemEvaluationSetup(unittest.TestCase):
@@ -54,7 +50,7 @@ class TestRealSystemEvaluationSetup(unittest.TestCase):
                 "北京",
             )
             self.assertEqual(
-                orchestrator.pending_trip,
+                memory.get_pending_trip(),
                 {"destination": "杭州"},
             )
 
@@ -74,7 +70,9 @@ class TestRealSystemEvaluationSetup(unittest.TestCase):
 
             seed_initial_state(memory, orchestrator, initial_state)
             memory.long_term.add_hotel_brand("汉庭")
-            orchestrator.pending_trip["origin"] = "苏州"
+            pending_trip = memory.get_pending_trip()
+            pending_trip["origin"] = "苏州"
+            memory.save_pending_trip(pending_trip)
 
         self.assertEqual(
             initial_state["preferences"]["hotel_brands"],

@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 import logging
 
+from .memory_repository import LongTermMemoryRepository
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +23,7 @@ PREFERENCE_TYPE_ALIASES = {
 }
 
 
-class LongTermMemory:
+class LongTermMemory(LongTermMemoryRepository):
     """
     长期记忆：持久化用户信息
     - 用户偏好（家庭地址、酒店品牌、航空公司等）
@@ -466,3 +468,8 @@ class LongTermMemory:
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
             logger.warning(f"Deleted long-term memory file: {self.db_path}")
+
+
+# 当前 JSON 文件实现的明确别名。保留 LongTermMemory 名称兼容既有调用；
+# SQLite 接入后，MemoryManager 只需要替换注入的 Repository 实例。
+JsonMemoryRepository = LongTermMemory

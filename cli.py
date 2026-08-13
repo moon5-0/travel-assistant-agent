@@ -697,10 +697,7 @@ class AligoCLI:
                 elif command == "health":
                     await self.run_health_check()
                 elif command == "clear":
-                    self.memory_manager.short_term.clear()
-
-                    if self.orchestrator:
-                        self.orchestrator.clear_pending_trip()
+                    self.memory_manager.clear_session_state()
 
                     self.console.print(
                         "✓ 已清空当前任务和短期记忆",
