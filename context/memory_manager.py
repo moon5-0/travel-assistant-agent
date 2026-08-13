@@ -5,6 +5,8 @@
 from typing import Dict, Any, List, Optional
 from .short_term_memory import ShortTermMemory
 from .long_term_memory import LongTermMemory
+from .memory_repository import LongTermMemoryRepository
+from .session_store import InMemorySessionStore, SessionStore
 import logging
 import json
 
@@ -18,7 +20,15 @@ class MemoryManager:
     - 长期记忆：用户偏好和历史（跨会话）
     """
 
-    def __init__(self, user_id: str, session_id: str, storage_path: str = "data/memory", llm_model=None):
+    def __init__(
+        self,
+        user_id: str,
+        session_id: str,
+        storage_path: str = "data/memory",
+        llm_model=None,
+        session_store: SessionStore = None,
+        repository: LongTermMemoryRepository = None,
+    ):
         """
         初始化记忆管理器
 
@@ -32,9 +42,19 @@ class MemoryManager:
         self.session_id = session_id
         self.llm_model = llm_model
 
-        # 初始化两层记忆
-        self.short_term = ShortTermMemory(max_turns=10)
-        self.long_term = LongTermMemory(user_id, storage_path)
+        # SessionStore 管理当前会话状态。第一阶段默认仍使用 Python 内存，
+        # 后续 RedisSessionStore 只需实现相同接口即可注入。
+        self.session_store = session_store or InMemorySessionStore()
+        self.short_term = ShortTermMemory(
+            max_turns=10,
+            session_id=session_id,
+            session_store=self.session_store,
+        )
+
+        # Repository 管理跨会话数据。当前默认仍是 JSON 实现，下一阶段
+        # 替换为 SQLiteMemoryRepository 时，上层业务接口保持不变。
+        self.long_term = repository or LongTermMemory(user_id, storage_path)
+        self.repository = self.long_term
 
         logger.info(f"Memory manager initialized for user {user_id}, session {session_id}")
 
@@ -58,6 +78,24 @@ class MemoryManager:
     # ========== 长期记忆操作 ==========
     # 注意：大部分方法直接使用 self.short_term 和 self.long_term 即可，无需封装
 
+    # ========== 当前任务状态 ==========
+
+    def get_pending_trip(self) -> Dict[str, Any]:
+        """读取当前会话尚未补全的行程草稿。"""
+        return self.session_store.get_pending_trip(self.session_id)
+
+    def save_pending_trip(self, trip_data: Dict[str, Any]) -> None:
+        """覆盖保存当前会话的行程草稿。"""
+        self.session_store.save_pending_trip(self.session_id, trip_data)
+
+    def clear_pending_trip(self) -> None:
+        """清除当前会话的行程草稿。"""
+        self.session_store.clear_pending_trip(self.session_id)
+
+    def clear_session_state(self) -> None:
+        """清除最近对话和待补全任务，不影响长期记忆。"""
+        self.session_store.clear_session(self.session_id)
+
     # ========== 综合查询 ==========
 
     def get_full_context(self) -> Dict[str, Any]:
@@ -71,7 +109,8 @@ class MemoryManager:
             "short_term": {
                 "recent_dialogue": self.short_term.get_recent_context(5),
                 "context_string": self.short_term.get_context_string(5),
-                "statistics": self.short_term.get_statistics()
+                "pending_trip": self.get_pending_trip(),
+                "statistics": self.short_term.get_statistics(),
             },
             "long_term": {
                 "preferences": self.long_term.get_preference(),
@@ -123,7 +162,7 @@ class MemoryManager:
 
     def end_session(self):
         """结束会话"""
-        self.short_term.clear()
+        self.clear_session_state()
         logger.info(f"Session ended: {self.session_id}")
 
     async def get_long_term_summary_async(self, max_messages: int = 50) -> str:

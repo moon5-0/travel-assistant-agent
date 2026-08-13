@@ -967,7 +967,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(plan_agent.started_at)
 
         # 行程规划完成后，临时状态应该被清空。
-        self.assertEqual(orchestrator._pending_trip_data, {})
+        self.assertEqual(orchestrator.get_pending_trip(), {})
 
     async def test_clear_pending_trip_discards_previous_fields(self):
         event_agent = FakeAgent(
@@ -1000,7 +1000,7 @@ class TestOrchestrationAgent(unittest.IsolatedAsyncioTestCase):
             "needs_clarification",
         )
         self.assertEqual(
-            orchestrator._pending_trip_data["destination"],
+            orchestrator.get_pending_trip()["destination"],
             "北京",
         )
 

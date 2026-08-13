@@ -53,7 +53,10 @@ class AgentTurnExecutor:
         # IntentionAgent 只知道对话文本，不直接持有协调器中的待补全状态。
         # 在业务入口补充这层状态感知，避免用户续接行程时只执行事项收集，
         # 却跳过后续的合并、缺失字段检查和继续规划流程。
-        get_pending_trip = getattr(self.orchestrator, "get_pending_trip", None)
+        get_pending_trip = getattr(self.memory_manager, "get_pending_trip", None)
+        if not callable(get_pending_trip):
+            # 兼容评估器中的轻量 FakeMemoryManager。
+            get_pending_trip = getattr(self.orchestrator, "get_pending_trip", None)
         pending_trip = get_pending_trip() if callable(get_pending_trip) else {}
         if pending_trip:
             intention_data = normalize_intention_routing(

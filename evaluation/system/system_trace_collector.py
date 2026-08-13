@@ -100,7 +100,10 @@ class SystemTraceCollector:
         orchestrator = self.turn_executor.orchestrator
         if hasattr(orchestrator, "get_pending_trip"):
             return deepcopy(orchestrator.get_pending_trip())
-        return deepcopy(getattr(orchestrator, "_pending_trip_data", {}))
+        memory_manager = getattr(self.turn_executor, "memory_manager", None)
+        if memory_manager and hasattr(memory_manager, "get_pending_trip"):
+            return deepcopy(memory_manager.get_pending_trip())
+        return {}
 
     @staticmethod
     def _collect_entities(

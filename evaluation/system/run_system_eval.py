@@ -59,7 +59,7 @@ def seed_initial_state(
     for trip in initial_state.get("trip_history", []):
         memory_manager.long_term.save_trip_history(deepcopy(trip))
 
-    orchestrator.restore_pending_trip(
+    memory_manager.save_pending_trip(
         deepcopy(initial_state.get("pending_trip", {}))
     )
 

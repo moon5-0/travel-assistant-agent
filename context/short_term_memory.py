@@ -6,6 +6,8 @@ from typing import List, Dict, Any
 from datetime import datetime
 import logging
 
+from .session_store import InMemorySessionStore, SessionStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +19,13 @@ class ShortTermMemory:
     - 用于上下文理解
     """
 
-    def __init__(self, max_turns: int = 10):
+    def __init__(
+        self,
+        max_turns: int = 10,
+        *,
+        session_id: str = "default_session",
+        session_store: SessionStore = None,
+    ):
         """
         初始化短期记忆
 
@@ -25,7 +33,13 @@ class ShortTermMemory:
             max_turns: 最大保存轮数（一轮 = 一对用户-助手消息）
         """
         self.max_turns = max_turns
-        self.messages: List[Dict[str, Any]] = []
+        self.session_id = session_id
+        self.session_store = session_store or InMemorySessionStore()
+
+    @property
+    def messages(self) -> List[Dict[str, Any]]:
+        """兼容旧调用；真实状态由 SessionStore 管理。"""
+        return self.session_store.get_recent_messages(self.session_id)
 
     def add_message(self, role: str, content: str, metadata: Dict = None):
         """
@@ -43,13 +57,12 @@ class ShortTermMemory:
             "metadata": metadata or {}
         }
 
-        self.messages.append(message)
-
-        # 自动淘汰旧消息（保持 max_turns 轮对话）
-        # 每轮 = 2条消息（用户 + 助手）
         max_messages = self.max_turns * 2
-        if len(self.messages) > max_messages:
-            self.messages = self.messages[-max_messages:]
+        self.session_store.add_message(
+            self.session_id,
+            message,
+            max_messages=max_messages,
+        )
 
         logger.debug(f"Added message to short-term memory: {role}")
 
@@ -64,11 +77,14 @@ class ShortTermMemory:
             最近的消息列表
         """
         if n_turns is None:
-            return self.messages.copy() # 避免调用方直接修改内部列表本身
+            return self.session_store.get_recent_messages(self.session_id)
 
         # n轮 = 2n条消息
         n_messages = n_turns * 2
-        return self.messages[-n_messages:] if len(self.messages) > n_messages else self.messages.copy()
+        return self.session_store.get_recent_messages(
+            self.session_id,
+            limit=n_messages,
+        )
 
     def get_context_string(self, n_turns: int = 5) -> str:
         """
@@ -93,7 +109,7 @@ class ShortTermMemory:
 
     def clear(self):
         """清空短期记忆"""
-        self.messages = []
+        self.session_store.clear_messages(self.session_id)
         logger.info("Short-term memory cleared")
 
     def get_statistics(self) -> Dict[str, Any]:
