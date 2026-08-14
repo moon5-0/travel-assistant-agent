@@ -10,10 +10,10 @@
 - 自然语言理解，无需关键词匹配
 
 ### 🧠 两层记忆架构
-- **短期记忆**：Redis缓存 + 滑动窗口（10轮对话，TTL 1小时，支持分布式会话共享）
-- **长期记忆**：PostgreSQL持久化 + LLM异步总结
+- **短期记忆**：基于 `SessionStore` 抽象的内存滑动窗口（最近10轮）
+- **长期记忆**：SQLite 持久化，支持偏好、聊天与行程跨会话查询
 - 智能识别偏好追加/覆盖动作（"我还喜欢如家" vs "我搬家到上海了"）
-- 缓存命中率85%，减少数据库查询压力
+- 存储层可替换：后续可新增 Redis 会话存储和 PostgreSQL 长期仓库
 
 ### 📚 RAG知识库
 - Milvus向量数据库 + BGE-m3 Embedding模型（本地部署）
@@ -181,18 +181,18 @@
 ### 2. 两层记忆系统
 
 **短期记忆（会话级）**
-- 基于**Redis缓存**的滑动窗口机制
-- 保存最近10轮对话（TTL 1小时）
-- 支持分布式部署时的会话共享
+- 基于 **InMemorySessionStore** 的滑动窗口机制
+- 保存最近10轮对话和当前待补全行程
+- 通过 `SessionStore` 接口为后续 Redis 接入保留替换点
 - 用于上下文理解和快速访问
 
 **长期记忆（持久化）**
-- 💾 **PostgreSQL持久化存储**：用户偏好、历史行程、完整聊天历史
+- 💾 **SQLite持久化存储**：用户偏好、历史行程、完整聊天历史
 - 🎯 **用户偏好管理**：支持动态添加任意偏好类型，智能识别追加/覆盖动作
 - 📅 **历史行程记录**：出发地、目的地、时间、目的，支持跨会话查询
 - 📊 **统计信息**：常去目的地、总行程数
-- 🤖 **LLM异步总结**：自动总结历史会话和行程记录
-- ⚡ **Redis缓存层**：用户偏好热数据、LLM总结结果（缓存命中率85%）
+- 🤖 **LLM异步总结**：按需总结历史会话和行程记录
+- 🗄️ **单一数据源**：长期记忆统一读写 SQLite，避免多存储数据不一致
 
 **测试记忆系统**：
 ```bash
@@ -429,9 +429,11 @@ shanglv/
 ├── context/                         # 记忆系统
 │   ├── memory_manager.py            # 记忆管理器
 │   ├── short_term_memory.py         # 短期记忆
-│   └── long_term_memory.py          # 长期记忆（支持动态偏好）
+│   ├── session_store.py              # 短期会话存储接口与内存实现
+│   ├── memory_repository.py          # 长期记忆仓库接口
+│   └── sqlite_memory_repository.py   # 默认 SQLite 长期记忆实现
 ├── data/
-│   ├── memory/                      # 长期记忆JSON存储（user_id.json）
+│   ├── memory/                      # SQLite 长期记忆数据库
 │   └── models/                      # 本地模型文件
 │       └── bge-small-zh-v1.5/       # BGE中文Embedding模型
 ├── tests/                           # 测试脚本
@@ -459,8 +461,8 @@ shanglv/
 - 🤖 **豆包大模型 (doubao-seed-1-6-flash-250828)** - 大语言模型
 
 ### 数据存储
-- 🗄️ **PostgreSQL** - 长期记忆持久化（用户偏好、历史行程、聊天记录）
-- ⚡ **Redis** - 短期记忆缓存（会话状态、用户偏好热数据、LLM总结结果）
+- 🗄️ **SQLite** - 长期记忆持久化（用户偏好、历史行程、聊天记录）
+- 🧩 **SessionStore / Repository** - 短期与长期存储的可替换接口
 - 🔍 **Milvus** - 向量数据库（本地存储，RAG知识库）
 
 ### 向量化与检索
@@ -497,9 +499,9 @@ shanglv/
 - BGE Embedding模型需下载到 `data/models/bge-small-zh-v1.5/`
 
 ### 数据存储
-- 当前版本使用**JSON文件存储**长期记忆（`data/memory/{user_id}.json`）
-- 项目描述中提到的PostgreSQL和Redis是**架构设计方案**（面向生产环境）
-- 如需切换到PostgreSQL/Redis，需修改 `context/long_term_memory.py` 和 `context/short_term_memory.py`
+- 当前版本使用 **SQLite** 存储长期记忆（`data/memory/memory.sqlite3`）
+- 当前短期会话默认使用进程内存；Redis 是下一阶段的可插拔实现
+- PostgreSQL 是面向多实例生产部署的长期仓库演进方向，当前未实现
 
 ### 知识库初始化
 - 首次运行前必须初始化RAG知识库
@@ -515,8 +517,8 @@ shanglv/
 
 ## 🚀 未来规划
 
-- [ ] 完整实现PostgreSQL持久化存储
-- [ ] 完整实现Redis缓存层
+- [ ] 实现 RedisSessionStore（TTL 与多实例会话共享）
+- [ ] 按生产规模评估是否迁移到 PostgreSQL
 - [ ] 支持更多LLM模型（OpenAI、Claude等）
 - [ ] Web界面（FastAPI + React）
 - [ ] 更多Skill插件（酒店预订、机票查询等）
