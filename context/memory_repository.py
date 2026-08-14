@@ -1,7 +1,7 @@
 """长期记忆的数据访问接口。
 
-当前 JSON 实现和下一阶段 SQLite 实现都遵循这一合同。业务层只依赖接口，
-不直接读写具体文件或数据库。
+业务层只依赖这个合同，不直接读写具体数据库。当前正式实现是 SQLite；
+未来如果迁移 PostgreSQL，只需新增另一个 Repository 实现。
 """
 
 from __future__ import annotations
@@ -19,6 +19,14 @@ class LongTermMemoryRepository(ABC):
 
     @abstractmethod
     def get_preference(self, pref_type: Optional[str] = None) -> Any:
+        pass
+
+    @abstractmethod
+    def add_hotel_brand(self, brand: str) -> None:
+        pass
+
+    @abstractmethod
+    def add_airline(self, airline: str) -> None:
         pass
 
     @abstractmethod
@@ -58,6 +66,13 @@ class LongTermMemoryRepository(ABC):
         pass
 
     @abstractmethod
+    def increment_query_count(self) -> None:
+        pass
+
+    @abstractmethod
     def clear_history(self) -> None:
         pass
 
+    @abstractmethod
+    def delete_all(self) -> None:
+        pass

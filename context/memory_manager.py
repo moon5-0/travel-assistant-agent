@@ -4,11 +4,10 @@
 """
 from typing import Dict, Any, List, Optional
 from .short_term_memory import ShortTermMemory
-from .long_term_memory import LongTermMemory
 from .memory_repository import LongTermMemoryRepository
 from .session_store import InMemorySessionStore, SessionStore
+from .sqlite_memory_repository import SQLiteMemoryRepository
 import logging
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +50,12 @@ class MemoryManager:
             session_store=self.session_store,
         )
 
-        # Repository 管理跨会话数据。当前默认仍是 JSON 实现，下一阶段
-        # 替换为 SQLiteMemoryRepository 时，上层业务接口保持不变。
-        self.long_term = repository or LongTermMemory(user_id, storage_path)
+        # Repository 管理跨会话数据。默认使用 SQLite；调用方仍可注入测试
+        # Repository，所以上层 Agent 不需要知道具体数据库实现。
+        self.long_term = repository or SQLiteMemoryRepository(
+            user_id,
+            storage_path,
+        )
         self.repository = self.long_term
 
         logger.info(f"Memory manager initialized for user {user_id}, session {session_id}")

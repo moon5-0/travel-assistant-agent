@@ -8,10 +8,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from context.long_term_memory import LongTermMemory
 from context.memory_manager import MemoryManager
 from context.memory_repository import LongTermMemoryRepository
 from context.session_store import InMemorySessionStore, SessionStore
+from context.sqlite_memory_repository import SQLiteMemoryRepository
 
 
 class TestInMemorySessionStore(unittest.TestCase):
@@ -65,7 +65,7 @@ class TestInMemorySessionStore(unittest.TestCase):
 
 
 class TestMemoryManagerStorageInjection(unittest.TestCase):
-    def test_default_json_storage_implements_repository_contract(self):
+    def test_default_sqlite_storage_implements_repository_contract(self):
         with tempfile.TemporaryDirectory() as storage_path:
             manager = MemoryManager(
                 user_id="user",
@@ -74,7 +74,7 @@ class TestMemoryManagerStorageInjection(unittest.TestCase):
             )
 
             self.assertIsInstance(manager.repository, LongTermMemoryRepository)
-            self.assertIsInstance(manager.repository, LongTermMemory)
+            self.assertIsInstance(manager.repository, SQLiteMemoryRepository)
 
     def test_injected_repository_receives_long_term_message_write(self):
         repository = Mock(spec=LongTermMemoryRepository)

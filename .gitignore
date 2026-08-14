@@ -41,7 +41,9 @@ wheels/
 
 # Data
 data/models/
-data/memory/*.json
+data/memory/*.sqlite3
+data/memory/*.sqlite3-shm
+data/memory/*.sqlite3-wal
 !data/memory/.gitkeep
 **/data/rag_knowledge/
 
