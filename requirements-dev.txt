@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Redis 单元测试替身（执行真实 Redis 命令语义，不需要启动服务端）
+fakeredis>=2.0.0,<3.0.0

@@ -63,6 +63,7 @@ async def main():
     from agents.intention_agent import IntentionAgent
     from agents.orchestration_agent import OrchestrationAgent
     from agents.lazy_agent_registry import LazyAgentRegistry
+    from tests.session_store_test_utils import create_test_session_store
     # Removed manual imports of sub-agents as they are now dynamically loaded
     from agentscope.message import Msg
 
@@ -84,7 +85,8 @@ async def main():
     memory_manager = MemoryManager(
         user_id="test_user",
         session_id="test_session",
-        llm_model=model
+        llm_model=model,
+        session_store=create_test_session_store("test_user"),
     )
 
     # 初始化意图识别智能体
