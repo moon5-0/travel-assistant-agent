@@ -28,6 +28,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from context.memory_manager import MemoryManager
 from context.short_term_memory import ShortTermMemory
+from tests.session_store_test_utils import (
+    create_fake_redis_client,
+    create_test_session_store,
+)
 
 
 class FakeResponse:
@@ -56,6 +60,7 @@ class TemporaryMemoryTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.storage_path = self.temp_dir.name
+        self.redis_client = create_fake_redis_client()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -65,12 +70,19 @@ class TemporaryMemoryTestCase(unittest.TestCase):
             user_id=user_id,
             session_id=session_id,
             storage_path=self.storage_path,
+            session_store=create_test_session_store(
+                user_id,
+                redis_client=self.redis_client,
+            ),
         )
 
 
 class TestShortTermMemory(unittest.TestCase):
     def test_sliding_window_keeps_only_latest_turns(self):
-        memory = ShortTermMemory(max_turns=2)
+        memory = ShortTermMemory(
+            max_turns=2,
+            session_store=create_test_session_store(),
+        )
 
         for index in range(6):
             role = "user" if index % 2 == 0 else "assistant"
@@ -253,6 +265,7 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.storage_path = self.temp_dir.name
+        self.redis_client = create_fake_redis_client()
 
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
@@ -262,6 +275,10 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
             user_id="summary_user",
             session_id="old_session",
             storage_path=self.storage_path,
+            session_store=create_test_session_store(
+                "summary_user",
+                redis_client=self.redis_client,
+            ),
         )
         old_session.add_message("user", "旧会话里我问过杭州出差")
         old_session.long_term.save_trip_history(
@@ -280,6 +297,10 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
             session_id="current_session",
             storage_path=self.storage_path,
             llm_model=model,
+            session_store=create_test_session_store(
+                "summary_user",
+                redis_client=self.redis_client,
+            ),
         )
         current_session.add_message("user", "当前会话消息不应进入旧会话摘要")
 
@@ -298,6 +319,10 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
             session_id="current_session",
             storage_path=self.storage_path,
             llm_model=FakeModel(error=RuntimeError("model unavailable")),
+            session_store=create_test_session_store(
+                "summary_error_user",
+                redis_client=self.redis_client,
+            ),
         )
         manager.long_term.save_trip_history(
             {"origin": "苏州", "destination": "杭州", "purpose": "出差"}

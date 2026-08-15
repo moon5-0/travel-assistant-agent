@@ -10,10 +10,10 @@
 - 自然语言理解，无需关键词匹配
 
 ### 🧠 两层记忆架构
-- **短期记忆**：基于 `SessionStore` 抽象的内存滑动窗口（最近10轮）
+- **短期记忆**：Redis 会话存储，支持滑动 TTL、最近10轮和多实例共享
 - **长期记忆**：SQLite 持久化，支持偏好、聊天与行程跨会话查询
 - 智能识别偏好追加/覆盖动作（"我还喜欢如家" vs "我搬家到上海了"）
-- 存储层可替换：后续可新增 Redis 会话存储和 PostgreSQL 长期仓库
+- 存储层解耦：`SessionStore` 管理会话状态，`LongTermMemoryRepository` 管理长期数据
 
 ### 📚 RAG知识库
 - Milvus向量数据库 + BGE-m3 Embedding模型（本地部署）
@@ -181,9 +181,11 @@
 ### 2. 两层记忆系统
 
 **短期记忆（会话级）**
-- 基于 **InMemorySessionStore** 的滑动窗口机制
+- 基于 **RedisSessionStore** 的滑动窗口机制
 - 保存最近10轮对话和当前待补全行程
-- 通过 `SessionStore` 接口为后续 Redis 接入保留替换点
+- Key 同时包含 `user_id` 和 `session_id`，保证用户与会话隔离
+- 会话活动会刷新 TTL，过期后 Redis 自动回收临时状态
+- 多个应用进程可以共享同一份会话数据
 - 用于上下文理解和快速访问
 
 **长期记忆（持久化）**
@@ -200,7 +202,7 @@ python tests/test_memory_system.py
 ```
 
 测试覆盖：
-- ✅ 短期记忆：添加、查询、统计
+- ✅ 短期记忆：添加、查询、TTL、用户/会话隔离、多实例共享
 - ✅ 长期记忆-偏好：动态添加、跨会话访问
 - ✅ 长期记忆-行程：保存、查询、高频目的地统计
 - ✅ 长期记忆-聊天历史：持久化对话记录
@@ -270,7 +272,24 @@ pip install rich==13.9.4                    # CLI界面
 pip install ddgs==9.10.0                    # 网络搜索
 ```
 
-### 2. 配置模型
+### 2. 启动 Redis
+
+短期对话和待补全行程保存在 Redis。已安装 Docker Desktop 时，
+先启动 Docker Desktop，再在项目目录执行：
+
+```bash
+docker compose -p travel-agent up -d redis
+docker compose -p travel-agent ps
+```
+
+默认连接 `redis://localhost:6379/0`，可复制 `.env.example` 中的
+变量按需调整。停止本地 Redis：
+
+```bash
+docker compose -p travel-agent down
+```
+
+### 3. 配置模型
 
 编辑 `config.py`，填入你的豆包大模型API密钥：
 
@@ -290,13 +309,13 @@ LLM_CONFIG = {
 - `temperature`: 控制生成的随机性（0-1，0.7为推荐值）
 - `max_tokens`: 最大输出token数（8192）
 
-### 3. 初始化知识库
+### 4. 初始化知识库
 
 ```bash
 python .claude/skills/ask-question/script/init_knowledge_base.py
 ```
 
-### 4. 启动系统
+### 5. 启动系统
 
 ```bash
 python cli.py
@@ -429,7 +448,9 @@ shanglv/
 ├── context/                         # 记忆系统
 │   ├── memory_manager.py            # 记忆管理器
 │   ├── short_term_memory.py         # 短期记忆
-│   ├── session_store.py              # 短期会话存储接口与内存实现
+│   ├── session_store.py              # 短期会话存储接口
+│   ├── redis_session_store.py        # Redis 短期会话存储
+│   ├── session_store_factory.py      # Redis 存储创建入口
 │   ├── memory_repository.py          # 长期记忆仓库接口
 │   └── sqlite_memory_repository.py   # 默认 SQLite 长期记忆实现
 ├── data/
@@ -500,7 +521,7 @@ shanglv/
 
 ### 数据存储
 - 当前版本使用 **SQLite** 存储长期记忆（`data/memory/memory.sqlite3`）
-- 当前短期会话默认使用进程内存；Redis 是下一阶段的可插拔实现
+- 当前短期会话使用 **Redis**；程序启动时会验证连接，不会静默降级到进程内存
 - PostgreSQL 是面向多实例生产部署的长期仓库演进方向，当前未实现
 
 ### 知识库初始化
@@ -517,7 +538,7 @@ shanglv/
 
 ## 🚀 未来规划
 
-- [ ] 实现 RedisSessionStore（TTL 与多实例会话共享）
+- [x] 实现 RedisSessionStore（TTL 与多实例会话共享）
 - [ ] 按生产规模评估是否迁移到 PostgreSQL
 - [ ] 支持更多LLM模型（OpenAI、Claude等）
 - [ ] Web界面（FastAPI + React）

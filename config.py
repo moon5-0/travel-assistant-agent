@@ -49,3 +49,14 @@ RESILIENCE_CONFIG = {
     "circuit_half_open_successes": 2,      # 半开状态下连续成功多少次后关闭
     "health_check_timeout_sec": 10.0,      # 健康检查请求超时（秒）
 }
+
+# Redis 短期会话存储。Redis 是正式运行依赖；单元测试通过注入测试客户端隔离。
+REDIS_SESSION_CONFIG = {
+    "url": os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    "ttl_seconds": int(os.getenv("REDIS_SESSION_TTL_SECONDS", "3600")),
+    "key_prefix": os.getenv("REDIS_KEY_PREFIX", "travel-agent"),
+    "socket_connect_timeout_sec": float(
+        os.getenv("REDIS_CONNECT_TIMEOUT_SECONDS", "2")
+    ),
+    "socket_timeout_sec": float(os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "2")),
+}

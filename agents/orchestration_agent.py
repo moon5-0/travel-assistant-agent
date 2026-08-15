@@ -21,8 +21,6 @@ import logging
 import asyncio
 import re
 
-from context.session_store import InMemorySessionStore
-
 logger = logging.getLogger(__name__)
 
 
@@ -109,26 +107,15 @@ class OrchestrationAgent(AgentBase):
         self.name = name
         self.agent_registry = agent_registry or {}
         self.memory_manager = memory_manager
-        # 正式链路由 MemoryManager 统一管理会话状态。独立构造调度器的离线
-        # 测试仍可使用这个 Store 降级，但调度器不再维护裸字典状态。
-        self._standalone_session_store = InMemorySessionStore()
-        self._standalone_session_id = f"orchestrator:{id(self)}"
 
     def _read_pending_trip(self) -> Dict[str, Any]:
         if self.memory_manager and hasattr(self.memory_manager, "get_pending_trip"):
             return self.memory_manager.get_pending_trip()
-        return self._standalone_session_store.get_pending_trip(
-            self._standalone_session_id
-        )
+        return {}
 
     def _write_pending_trip(self, trip_data: Dict[str, Any]) -> None:
         if self.memory_manager and hasattr(self.memory_manager, "save_pending_trip"):
             self.memory_manager.save_pending_trip(trip_data)
-            return
-        self._standalone_session_store.save_pending_trip(
-            self._standalone_session_id,
-            trip_data,
-        )
 
     def register_agent(self, agent_name: str, agent: AgentBase):
         """注册子智能体"""
@@ -145,10 +132,6 @@ class OrchestrationAgent(AgentBase):
         """清除当前会话中尚未完成的行程信息。"""
         if self.memory_manager and hasattr(self.memory_manager, "clear_pending_trip"):
             self.memory_manager.clear_pending_trip()
-            return
-        self._standalone_session_store.clear_pending_trip(
-            self._standalone_session_id
-        )
 
     def get_pending_trip(self) -> Dict[str, Any]:
         """返回待补全行程的副本，供状态展示和执行轨迹采集使用。"""

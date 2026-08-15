@@ -9,6 +9,7 @@ from evaluation.system.run_system_eval import (
     seed_initial_state,
     select_cases,
 )
+from tests.session_store_test_utils import create_test_session_store
 
 
 class FakeOrchestrator:
@@ -22,6 +23,7 @@ class TestRealSystemEvaluationSetup(unittest.TestCase):
                 user_id="eval-user",
                 session_id="eval-session",
                 storage_path=storage_path,
+                session_store=create_test_session_store("eval-user"),
             )
             orchestrator = FakeOrchestrator()
 
@@ -65,6 +67,7 @@ class TestRealSystemEvaluationSetup(unittest.TestCase):
                 user_id="eval-user",
                 session_id="eval-session",
                 storage_path=storage_path,
+                session_store=create_test_session_store("eval-user"),
             )
             orchestrator = FakeOrchestrator()
 

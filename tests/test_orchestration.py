@@ -66,7 +66,7 @@ except ModuleNotFoundError:
     sys.modules["agentscope.message"] = message_module
 
 
-from agents.orchestration_agent import OrchestrationAgent
+from agents.orchestration_agent import OrchestrationAgent as ProductionOrchestrationAgent
 
 
 class FakeAgent(AgentBase):
@@ -131,6 +131,34 @@ class FakeMemoryManager:
     def __init__(self):
         self.short_term = FakeShortTermMemory()
         self.long_term = FakeLongTermMemory()
+        self._pending_trip: Dict[str, Any] = {}
+
+    def get_pending_trip(self) -> Dict[str, Any]:
+        return dict(self._pending_trip)
+
+    def save_pending_trip(
+        self,
+        trip_data: Dict[str, Any],
+    ) -> None:
+        self._pending_trip = dict(trip_data)
+
+    def clear_pending_trip(self) -> None:
+        self._pending_trip.clear()
+
+
+class OrchestrationAgent(ProductionOrchestrationAgent):
+    """为单元测试注入可控的会话存储。
+
+    生产代码由 MemoryManager 提供 Redis 会话状态；测试不连接
+    真实 Redis，因此在这里显式使用 FakeMemoryManager。
+    """
+
+    def __init__(self, *args, memory_manager=None, **kwargs):
+        super().__init__(
+            *args,
+            memory_manager=memory_manager or FakeMemoryManager(),
+            **kwargs,
+        )
 
 
 def reference_planning_context():
