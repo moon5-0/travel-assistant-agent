@@ -5,7 +5,8 @@
 from typing import Dict, Any, List, Optional
 from .short_term_memory import ShortTermMemory
 from .memory_repository import LongTermMemoryRepository
-from .session_store import InMemorySessionStore, SessionStore
+from .session_store import SessionStore
+from .session_store_factory import create_session_store
 from .sqlite_memory_repository import SQLiteMemoryRepository
 import logging
 
@@ -41,9 +42,9 @@ class MemoryManager:
         self.session_id = session_id
         self.llm_model = llm_model
 
-        # SessionStore 管理当前会话状态。第一阶段默认仍使用 Python 内存，
-        # 后续 RedisSessionStore 只需实现相同接口即可注入。
-        self.session_store = session_store or InMemorySessionStore()
+        # SessionStore 管理当前会话状态。正式运行默认使用 Redis；测试可注入
+        # 遵循同一接口的隔离客户端，不允许连接失败后静默切换本地内存。
+        self.session_store = session_store or create_session_store(user_id)
         self.short_term = ShortTermMemory(
             max_turns=10,
             session_id=session_id,

@@ -16,5 +16,8 @@ sentence-transformers==5.2.3
 # CLI 界面
 rich==13.9.4
 
+# 短期会话存储
+redis>=5.0.0,<7.0.0
+
 # 网络搜索（DDGS）
 ddgs==9.10.0

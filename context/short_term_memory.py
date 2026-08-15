@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 from datetime import datetime
 import logging
 
-from .session_store import InMemorySessionStore, SessionStore
+from .session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,9 @@ class ShortTermMemory:
         """
         self.max_turns = max_turns
         self.session_id = session_id
-        self.session_store = session_store or InMemorySessionStore()
+        if session_store is None:
+            raise ValueError("ShortTermMemory 必须注入 SessionStore")
+        self.session_store = session_store
 
     @property
     def messages(self) -> List[Dict[str, Any]]:
@@ -114,9 +116,11 @@ class ShortTermMemory:
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息"""
+        # 只读取一次 Redis，避免为了一份统计信息发起多次网络往返。
+        messages = self.messages
         return {
-            "total_messages": len(self.messages),
+            "total_messages": len(messages),
             "max_turns": self.max_turns,
-            "oldest_message_time": self.messages[0]["timestamp"] if self.messages else None,
-            "newest_message_time": self.messages[-1]["timestamp"] if self.messages else None
+            "oldest_message_time": messages[0]["timestamp"] if messages else None,
+            "newest_message_time": messages[-1]["timestamp"] if messages else None
         }
