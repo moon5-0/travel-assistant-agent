@@ -47,6 +47,30 @@ class LongTermMemoryRepository(ABC):
         pass
 
     @abstractmethod
+    def save_session_summary(
+        self,
+        session_id: str,
+        summary: str,
+        message_count: int,
+    ) -> None:
+        """保存或更新一个已结束会话的摘要。"""
+
+    @abstractmethod
+    def get_session_summary(
+        self,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """按会话ID读取单条摘要。"""
+
+    @abstractmethod
+    def get_session_summaries(
+        self,
+        limit: int = 3,
+        exclude_session_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """读取最近的已持久化会话摘要。"""
+
+    @abstractmethod
     def save_trip_history(self, trip_info: Dict[str, Any]) -> bool:
         pass
 

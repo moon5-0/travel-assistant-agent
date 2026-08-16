@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -237,7 +238,7 @@ class TestMemoryManagerStorageInjection(unittest.TestCase):
             manager.short_term.add_message("user", "当前问题")
             manager.save_pending_trip({"destination": "北京"})
 
-            manager.end_session()
+            asyncio.run(manager.end_session())
 
             self.assertEqual(manager.short_term.get_recent_context(), [])
             self.assertEqual(manager.get_pending_trip(), {})

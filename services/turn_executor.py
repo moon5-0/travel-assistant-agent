@@ -138,17 +138,17 @@ class AgentTurnExecutor:
 
     async def _build_intention_context(self, user_input: str) -> list[Msg]:
         """组装 IntentionAgent 需要的长期摘要、近期对话和当前问题。"""
-        long_term_summary = await self._get_long_term_summary(user_input)
+        long_term_context = self._get_long_term_context(user_input)
         recent_context = self.memory_manager.short_term.get_recent_context(
             n_turns=5,
         )
 
         messages = []
-        if long_term_summary:
+        if long_term_context:
             messages.append(
                 Msg(
                     name="system",
-                    content=long_term_summary,
+                    content=long_term_context,
                     role="system",
                 )
             )
@@ -163,8 +163,8 @@ class AgentTurnExecutor:
         messages.append(Msg(name="user", content=user_input, role="user"))
         return messages
 
-    async def _get_long_term_summary(self, user_input: str = "") -> str:
-        """为意图识别整理偏好、历史会话摘要和相关历史行程。"""
+    def _get_long_term_context(self, user_input: str = "") -> str:
+        """读取已持久化的偏好、会话摘要和相关历史行程。"""
         summary_parts = []
 
         preferences = self.memory_manager.long_term.get_preference()
@@ -187,12 +187,15 @@ class AgentTurnExecutor:
             if len(preference_lines) > 1:
                 summary_parts.extend(preference_lines)
 
-        chat_summary = await self.memory_manager.get_long_term_summary_async(
-            max_messages=50,
+        session_summaries = self.memory_manager.get_previous_session_summaries(
+            limit=3,
         )
-        if chat_summary:
+        if session_summaries:
             summary_parts.append("\n【历史会话总结】")
-            summary_parts.append(chat_summary)
+            for index, item in enumerate(session_summaries, 1):
+                summary_parts.append(
+                    f"{index}. {item.get('summary', '')}"
+                )
 
         all_trips = self.memory_manager.long_term.get_trip_history(limit=None)
         if all_trips:

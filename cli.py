@@ -687,7 +687,9 @@ class AligoCLI:
                 command = user_input.strip().lower()
 
                 if command == "exit":
-                    self.memory_manager.end_session()
+                    # 仅在会话结束时生成一次摘要；后续会话
+                    # 直接从 SQLite 读取，避免每轮重复调用 LLM。
+                    await self.memory_manager.end_session()
                     self.console.print("再见！", style="cyan")
                     break
                 elif command == "help":

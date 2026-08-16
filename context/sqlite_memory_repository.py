@@ -29,7 +29,7 @@ class SQLiteMemoryRepository(LongTermMemoryRepository):
     """将用户偏好、聊天记录和历史行程持久化到 SQLite。"""
 
     DATABASE_NAME = "memory.sqlite3"
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -96,6 +96,20 @@ class SQLiteMemoryRepository(LongTermMemoryRepository):
 
                 CREATE INDEX IF NOT EXISTS idx_chat_user_session_id
                 ON chat_messages (user_id, session_id, id);
+
+                CREATE TABLE IF NOT EXISTS session_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    message_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (user_id, session_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_summary_user_id
+                ON session_summaries (user_id, id);
 
                 CREATE TABLE IF NOT EXISTS trip_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -300,6 +314,92 @@ class SQLiteMemoryRepository(LongTermMemoryRepository):
             rows = list(reversed(rows))
         return [dict(row) for row in rows]
 
+    def save_session_summary(
+        self,
+        session_id: str,
+        summary: str,
+        message_count: int,
+    ) -> None:
+        """以 user_id + session_id 为唯一键幂等保存摘要。"""
+        normalized_session_id = str(session_id).strip()
+        normalized_summary = str(summary).strip()
+        if not normalized_session_id:
+            raise ValueError("session_id 不能为空")
+        if not normalized_summary:
+            raise ValueError("session summary 不能为空")
+        if message_count < 0:
+            raise ValueError("message_count 不能小于0")
+
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO session_summaries (
+                    user_id, session_id, summary, message_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    message_count = excluded.message_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    self.user_id,
+                    normalized_session_id,
+                    normalized_summary,
+                    int(message_count),
+                    now,
+                    now,
+                ),
+            )
+
+    def get_session_summary(
+        self,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT session_id, summary, message_count, created_at, updated_at
+                FROM session_summaries
+                WHERE user_id = ? AND session_id = ?
+                """,
+                (self.user_id, session_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_session_summaries(
+        self,
+        limit: int = 3,
+        exclude_session_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if limit < 0:
+            raise ValueError("limit 不能小于0")
+        if limit == 0:
+            return []
+
+        filters = ["user_id = ?"]
+        params: List[Any] = [self.user_id]
+        if exclude_session_id is not None:
+            filters.append("session_id != ?")
+            params.append(exclude_session_id)
+        params.append(limit)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT session_id, summary, message_count, created_at, updated_at
+                FROM session_summaries
+                WHERE {' AND '.join(filters)}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        # 数据库先取“最近N条”，提示词中再按时间正序展示。
+        return [dict(row) for row in reversed(rows)]
+
     def _insert_trip(
         self,
         connection: sqlite3.Connection,
@@ -457,6 +557,10 @@ class SQLiteMemoryRepository(LongTermMemoryRepository):
                 "SELECT COUNT(*) FROM trip_history WHERE user_id = ?",
                 (self.user_id,),
             ).fetchone()[0]
+            total_session_summaries = connection.execute(
+                "SELECT COUNT(*) FROM session_summaries WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()[0]
             row = connection.execute(
                 "SELECT total_queries FROM user_statistics WHERE user_id = ?",
                 (self.user_id,),
@@ -465,15 +569,20 @@ class SQLiteMemoryRepository(LongTermMemoryRepository):
         return {
             "total_trips": total_trips,
             "total_messages": total_messages,
+            "total_session_summaries": total_session_summaries,
             "frequent_destinations": dict(self.get_frequent_destinations(top_n=100)),
             "total_queries": row["total_queries"] if row else 0,
         }
 
     def clear_history(self) -> None:
-        """清除当前用户的聊天与行程；偏好继续保留。"""
+        """清除当前用户的聊天、摘要与行程；偏好继续保留。"""
         with self._connect() as connection:
             connection.execute(
                 "DELETE FROM chat_messages WHERE user_id = ?",
+                (self.user_id,),
+            )
+            connection.execute(
+                "DELETE FROM session_summaries WHERE user_id = ?",
                 (self.user_id,),
             )
             connection.execute(
@@ -487,6 +596,7 @@ class SQLiteMemoryRepository(LongTermMemoryRepository):
             for table in (
                 "preferences",
                 "chat_messages",
+                "session_summaries",
                 "trip_history",
                 "user_statistics",
             ):

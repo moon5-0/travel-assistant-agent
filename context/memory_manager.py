@@ -118,6 +118,10 @@ class MemoryManager:
             "long_term": {
                 "preferences": self.long_term.get_preference(),
                 "chat_history": self.long_term.get_chat_history(10),
+                "session_summaries": self.long_term.get_session_summaries(
+                    limit=3,
+                    exclude_session_id=self.session_id,
+                ),
                 "trip_history": self.long_term.get_trip_history(5),
                 "frequent_destinations": self.long_term.get_frequent_destinations(3),
                 "statistics": self.long_term.get_statistics()
@@ -129,7 +133,7 @@ class MemoryManager:
         获取用于Agent的上下文字符串
 
         Args:
-            long_term_summary: 长期记忆总结（可选，需提前调用 get_long_term_summary_async）
+            long_term_summary: 已持久化的历史会话摘要（可选）
 
         Returns:
             格式化的上下文字符串
@@ -163,132 +167,135 @@ class MemoryManager:
 
     # ========== 会话管理 ==========
 
-    def end_session(self):
-        """结束会话"""
-        self.clear_session_state()
-        logger.info(f"Session ended: {self.session_id}")
+    async def _extract_model_text(self, response: Any) -> str:
+        """统一提取普通响应和异步流式响应中的文本。"""
+        summary = ""
+        if hasattr(response, "__aiter__"):
+            async for chunk in response:
+                if isinstance(chunk, str):
+                    summary = chunk
+                elif hasattr(chunk, "content"):
+                    content = chunk.content
+                    if isinstance(content, str):
+                        summary = content
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                summary = item.get("text", "")
+        elif hasattr(response, "content"):
+            summary = str(response.content)
+        else:
+            summary = str(response)
+        return summary.strip()
 
-    async def get_long_term_summary_async(self, max_messages: int = 50) -> str:
-        """
-        使用LLM总结长期聊天历史（异步版本）
-
-        Args:
-            max_messages: 最多总结的消息数量
-
-        Returns:
-            总结后的文本
-        """
+    async def generate_current_session_summary_async(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        *,
+        max_messages: int = 50,
+    ) -> str:
+        """只总结当前会话聊天，不重复混入结构化偏好和行程。"""
+        if max_messages <= 0:
+            raise ValueError("max_messages 必须大于0")
         if not self.llm_model:
             return ""
 
-        # 获取长期聊天历史（排除当前会话）
-        all_history = self.long_term.get_chat_history(limit=max_messages)
-        history_from_other_sessions = [
-            msg for msg in all_history
-            if msg.get("session_id") != self.session_id
-        ]
-
-        # 获取行程历史
-        trip_history = self.long_term.get_trip_history(limit=20)
-
-        # 如果既没有聊天记录也没有行程记录，直接返回
-        if not history_from_other_sessions and not trip_history:
+        if messages is None:
+            messages = self.long_term.get_chat_history(
+                limit=None,
+                session_id=self.session_id,
+            )
+        selected_messages = messages[-max_messages:]
+        if not selected_messages:
             return ""
 
-        # 构建聊天记录文本
-        history_text = []
-        for msg in history_from_other_sessions[-max_messages:]:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            timestamp = msg.get("timestamp", "")
-            history_text.append(f"[{timestamp}] {role}: {content}")
+        dialogue_lines = []
+        for message in selected_messages:
+            role = message.get("role", "unknown")
+            content = str(message.get("content", ""))[:1500]
+            timestamp = message.get("timestamp", "")
+            dialogue_lines.append(f"[{timestamp}] {role}: {content}")
 
-        history_str = "\n".join(history_text) if history_text else "（无聊天记录）"
+        prompt = f"""请为以下一次已结束的对话生成会话摘要。
+只总结对后续会话有价值的事实：
+1. 用户想完成的任务或提出的核心问题
+2. 用户已明确提供的关键信息和做出的决定
+3. 尚未解决、之后可能需要继续的事项
 
-        # 构建行程历史文本
-        trip_text = []
-        for trip in trip_history:
-            origin = trip.get("origin", "未知")
-            destination = trip.get("destination", "未知")
-            start_date = trip.get("start_date", "")
-            end_date = trip.get("end_date", "")
-            purpose = trip.get("purpose", "旅游")
-            timestamp = trip.get("timestamp", "")
+不要推测未出现的信息，不要复述Agent调度过程，不要重复大段回答。
+请用不超过200字的中文完成摘要。
 
-            if start_date and end_date:
-                trip_text.append(f"[{timestamp}] {origin} → {destination} ({start_date} 至 {end_date}) - {purpose}")
-            elif start_date:
-                trip_text.append(f"[{timestamp}] {origin} → {destination} ({start_date}) - {purpose}")
-            else:
-                trip_text.append(f"[{timestamp}] {origin} → {destination} - {purpose}")
-
-        trip_str = "\n".join(trip_text) if trip_text else "（无行程记录）"
-
-        # 使用LLM总结
-        summarization_prompt = f"""请总结以下历史信息中的关键内容，包括：
-1. 用户的旅行偏好和习惯
-2. 用户询问过的重要问题
-3. 用户的出行历史和目的地
-4. 其他重要的上下文信息
-
-【历史聊天记录】
-{history_str}
-
-【历史行程记录】
-{trip_str}
-
-请用简洁的语言总结（不超过200字）："""
+【当前会话】
+{chr(10).join(dialogue_lines)}
+"""
 
         try:
-            # 调用模型（异步调用）
-            response = await self.llm_model([{"role": "user", "content": summarization_prompt}])
-
-            # 处理异步生成器响应
-            summary = ""
-            if hasattr(response, '__aiter__'):
-                # 异步生成器，需要迭代获取内容
-                async for chunk in response:
-                    if isinstance(chunk, str):
-                        summary = chunk
-                    elif hasattr(chunk, 'content'):
-                        if isinstance(chunk.content, str):
-                            summary = chunk.content
-                        elif isinstance(chunk.content, list):
-                            for item in chunk.content:
-                                if isinstance(item, dict) and item.get('type') == 'text':
-                                    summary = item.get('text', '')
-            elif hasattr(response, 'content'):
-                summary = str(response.content)
-            else:
-                summary = str(response)
-
-            logger.info(f"Generated long-term memory summary ({len(summary)} chars)")
-            return summary.strip()
-
-        except Exception as e:
-            logger.error(f"Failed to generate long-term summary: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            response = await self.llm_model(
+                [{"role": "user", "content": prompt}]
+            )
+            summary = await self._extract_model_text(response)
+            logger.info(
+                "Generated session summary for %s (%d chars)",
+                self.session_id,
+                len(summary),
+            )
+            return summary
+        except Exception as exc:
+            logger.error(
+                "Failed to generate summary for session %s: %s",
+                self.session_id,
+                exc,
+            )
             return ""
 
-    def get_long_term_summary(self, max_messages: int = 50) -> str:
-        """
-        使用LLM总结长期聊天历史（同步版本）
+    def get_previous_session_summaries(
+        self,
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """直接读取历史会话已持久化的摘要，不调用LLM。"""
+        return self.long_term.get_session_summaries(
+            limit=limit,
+            exclude_session_id=self.session_id,
+        )
 
-        Args:
-            max_messages: 最多总结的消息数量
-
-        Returns:
-            总结后的文本
-        """
-        import asyncio
-
-        # 检查是否在事件循环中
+    async def end_session(self, max_messages: int = 50) -> str:
+        """生成并持久化当前会话摘要，最后清除Redis临时状态。"""
+        summary = ""
         try:
-            loop = asyncio.get_running_loop()
-            # 已经在事件循环中，不能使用 asyncio.run
-            logger.warning("get_long_term_summary called from async context, please use get_long_term_summary_async instead")
+            messages = self.long_term.get_chat_history(
+                limit=None,
+                session_id=self.session_id,
+            )
+            if not messages:
+                return ""
+
+            existing = self.long_term.get_session_summary(self.session_id)
+            if (
+                existing
+                and existing.get("message_count") == len(messages)
+            ):
+                return str(existing.get("summary", ""))
+
+            summary = await self.generate_current_session_summary_async(
+                messages,
+                max_messages=max_messages,
+            )
+            if summary:
+                self.long_term.save_session_summary(
+                    self.session_id,
+                    summary,
+                    len(messages),
+                )
+            return summary
+        except Exception as exc:
+            # 摘要是可重建的派生数据；失败时保留SQLite原始聊天，
+            # 不让用户因为摘要存储异常无法退出。
+            logger.error(
+                "Failed to persist summary for session %s: %s",
+                self.session_id,
+                exc,
+            )
             return ""
-        except RuntimeError:
-            # 没有运行的事件循环，可以使用 asyncio.run
-            return asyncio.run(self.get_long_term_summary_async(max_messages))
+        finally:
+            self.clear_session_state()
+            logger.info("Session ended: %s", self.session_id)

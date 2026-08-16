@@ -9,13 +9,15 @@
 3. 偏好新增、覆盖和列表去重；
 4. 行程历史、目的地统计与 clear_history() 语义；
 5. 相同用户在不同 session_id 下的长期记忆共享；
-6. 使用 FakeModel 验证旧会话 LLM 摘要输入与失败降级。
+6. 使用 FakeModel 验证会话结束摘要、持久化与失败降级。
 
 运行：python3 tests/test_memory_system.py
 """
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -116,7 +118,7 @@ class TestMemoryManager(TemporaryMemoryTestCase):
         )
         self.assertTrue(Path(manager.long_term.db_path).exists())
 
-        manager.end_session()
+        asyncio.run(manager.end_session())
 
         self.assertEqual(manager.short_term.get_recent_context(), [])
         self.assertEqual(len(manager.long_term.get_chat_history()), 2)
@@ -174,6 +176,7 @@ class TestMemoryManager(TemporaryMemoryTestCase):
         memory = manager.long_term
         memory.save_preference("seat_preference", "靠窗")
         manager.add_message("user", "记录一条聊天")
+        memory.save_session_summary("finished_session", "已完成会话摘要", 1)
 
         for destination in ["杭州", "北京", "杭州"]:
             memory.save_trip_history(
@@ -190,9 +193,55 @@ class TestMemoryManager(TemporaryMemoryTestCase):
         memory.clear_history()
 
         self.assertEqual(memory.get_chat_history(), [])
+        self.assertEqual(memory.get_session_summaries(), [])
         self.assertEqual(memory.get_trip_history(limit=None), [])
         self.assertEqual(memory.get_statistics()["total_trips"], 0)
         self.assertEqual(memory.get_preference("seat_preference"), "靠窗")
+
+    def test_existing_v1_database_is_upgraded_without_losing_data(self):
+        db_path = Path(self.storage_path) / "memory.sqlite3"
+        with sqlite3.connect(db_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE preferences (
+                    user_id TEXT NOT NULL,
+                    preference_type TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, preference_type)
+                );
+                PRAGMA user_version = 1;
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO preferences (
+                    user_id, preference_type, value_json, updated_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                ("upgrade_user", "home_location", '"苏州"', "old"),
+            )
+
+        manager = self.create_manager(user_id="upgrade_user")
+
+        self.assertEqual(
+            manager.long_term.get_preference("home_location"),
+            "苏州",
+        )
+        manager.long_term.save_session_summary(
+            "old_session",
+            "升级后可写入摘要",
+            2,
+        )
+        self.assertEqual(
+            manager.long_term.get_session_summary("old_session")["summary"],
+            "升级后可写入摘要",
+        )
+        with sqlite3.connect(db_path) as connection:
+            schema_version = connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+        self.assertEqual(schema_version, 2)
 
     def test_duplicate_trip_history_is_idempotent(self):
         memory = self.create_manager().long_term
@@ -261,7 +310,7 @@ class TestMemoryManager(TemporaryMemoryTestCase):
         self.assertIn("用户: 当前会话问题", agent_context)
 
 
-class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
+class TestPersistedSessionSummary(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.storage_path = self.temp_dir.name
@@ -270,18 +319,22 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
 
-    async def test_summary_uses_other_sessions_and_trip_history(self):
-        old_session = MemoryManager(
+    async def test_end_session_generates_and_persists_current_summary_once(self):
+        model = FakeModel()
+        manager = MemoryManager(
             user_id="summary_user",
-            session_id="old_session",
+            session_id="session_a",
             storage_path=self.storage_path,
+            llm_model=model,
             session_store=create_test_session_store(
                 "summary_user",
                 redis_client=self.redis_client,
             ),
         )
-        old_session.add_message("user", "旧会话里我问过杭州出差")
-        old_session.long_term.save_trip_history(
+        manager.add_message("user", "我想去杭州出差")
+        manager.add_message("assistant", "请问什么时候出发？")
+        manager.save_pending_trip({"destination": "杭州"})
+        manager.long_term.save_trip_history(
             {
                 "origin": "上海",
                 "destination": "杭州",
@@ -291,29 +344,58 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        model = FakeModel()
-        current_session = MemoryManager(
+        first_summary = await manager.end_session()
+        second_summary = await manager.end_session()
+
+        self.assertEqual(first_summary, "用户曾从上海前往杭州出差。")
+        self.assertEqual(second_summary, first_summary)
+        self.assertEqual(len(model.calls), 1)
+        prompt = model.calls[0][0]["content"]
+        self.assertIn("我想去杭州出差", prompt)
+        self.assertNotIn("上海 → 杭州", prompt)
+
+        saved = manager.long_term.get_session_summary("session_a")
+        self.assertEqual(saved["summary"], first_summary)
+        self.assertEqual(saved["message_count"], 2)
+        self.assertEqual(manager.short_term.get_recent_context(), [])
+        self.assertEqual(manager.get_pending_trip(), {})
+        self.assertEqual(len(manager.long_term.get_chat_history()), 2)
+
+    async def test_new_session_reads_previous_summary_without_model_call(self):
+        old_model = FakeModel(summary="用户计划去北京出差。")
+        old_session = MemoryManager(
             user_id="summary_user",
-            session_id="current_session",
+            session_id="old_session",
             storage_path=self.storage_path,
-            llm_model=model,
+            llm_model=old_model,
             session_store=create_test_session_store(
                 "summary_user",
                 redis_client=self.redis_client,
             ),
         )
-        current_session.add_message("user", "当前会话消息不应进入旧会话摘要")
+        old_session.add_message("user", "帮我规划北京行程")
+        await old_session.end_session()
 
-        summary = await current_session.get_long_term_summary_async()
+        current_session = MemoryManager(
+            user_id="summary_user",
+            session_id="current_session",
+            storage_path=self.storage_path,
+            session_store=create_test_session_store(
+                "summary_user",
+                redis_client=self.redis_client,
+            ),
+        )
+        summaries = current_session.get_previous_session_summaries()
 
-        self.assertEqual(summary, "用户曾从上海前往杭州出差。")
-        self.assertEqual(len(model.calls), 1)
-        prompt = model.calls[0][0]["content"]
-        self.assertIn("旧会话里我问过杭州出差", prompt)
-        self.assertNotIn("当前会话消息不应进入旧会话摘要", prompt)
-        self.assertIn("上海 → 杭州", prompt)
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["session_id"], "old_session")
+        self.assertEqual(
+            summaries[0]["summary"],
+            "用户计划去北京出差。",
+        )
+        self.assertEqual(len(old_model.calls), 1)
 
-    async def test_summary_failure_returns_empty_string(self):
+    async def test_summary_failure_preserves_raw_history_and_clears_redis(self):
         manager = MemoryManager(
             user_id="summary_error_user",
             session_id="current_session",
@@ -324,14 +406,38 @@ class TestLongTermSummary(unittest.IsolatedAsyncioTestCase):
                 redis_client=self.redis_client,
             ),
         )
-        manager.long_term.save_trip_history(
-            {"origin": "苏州", "destination": "杭州", "purpose": "出差"}
-        )
+        manager.add_message("user", "摘要失败也要保留的原始聊天")
+        manager.save_pending_trip({"destination": "杭州"})
 
         with self.assertLogs("context.memory_manager", level="ERROR"):
-            summary = await manager.get_long_term_summary_async()
+            summary = await manager.end_session()
 
         self.assertEqual(summary, "")
+        self.assertIsNone(
+            manager.long_term.get_session_summary("current_session")
+        )
+        self.assertEqual(len(manager.long_term.get_chat_history()), 1)
+        self.assertEqual(manager.short_term.get_recent_context(), [])
+        self.assertEqual(manager.get_pending_trip(), {})
+
+    async def test_empty_session_does_not_call_summary_model(self):
+        model = FakeModel()
+        manager = MemoryManager(
+            user_id="empty_summary_user",
+            session_id="empty_session",
+            storage_path=self.storage_path,
+            llm_model=model,
+            session_store=create_test_session_store(
+                "empty_summary_user",
+                redis_client=self.redis_client,
+            ),
+        )
+
+        summary = await manager.end_session()
+
+        self.assertEqual(summary, "")
+        self.assertEqual(model.calls, [])
+        self.assertEqual(manager.long_term.get_session_summaries(), [])
 
 
 if __name__ == "__main__":
