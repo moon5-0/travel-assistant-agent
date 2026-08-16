@@ -2,6 +2,12 @@
 
 评估按业务问题分为三个独立模块，避免把系统流程、最终行程和 RAG 问答混成一个总分。
 
+当前简历项目版的最终回归口径、重跑结果和已归档 LLM 指标见：
+
+```text
+evaluation/reports/final-regression-v1.0.0.md
+```
+
 ```text
 evaluation/
 ├── system/             # 路由、执行、状态与记忆副作用
