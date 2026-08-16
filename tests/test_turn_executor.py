@@ -38,8 +38,10 @@ class FakeMemoryManager:
         self.long_term = FakeLongTermMemory()
         self.added_messages = []
 
-    async def get_long_term_summary_async(self, max_messages: int = 50):
-        return "用户经常从苏州出发"
+    def get_previous_session_summaries(self, limit: int = 3):
+        return [
+            {"session_id": "old", "summary": "用户经常从苏州出发"}
+        ]
 
     def add_message(self, role: str, content: str):
         self.added_messages.append((role, content))
@@ -160,6 +162,7 @@ class TestAgentTurnExecutor(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context_messages[-1].role, "user")
         self.assertEqual(context_messages[0].role, "system")
         self.assertIn("hotel_brands", context_messages[0].content)
+        self.assertIn("用户经常从苏州出发", context_messages[0].content)
         self.assertIs(orchestrator.received, intention_agent.response)
         self.assertEqual(
             orchestrator.received.metadata["original_user_input"],
