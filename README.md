@@ -1,552 +1,288 @@
-# Aligo 智能旅行助手
+# Aligo 企业差旅助手
 
-基于**豆包大模型**和**AgentScope框架**的多智能体旅行规划系统，采用Plan-and-Execute架构，实现智能意图识别、两层记忆系统、RAG知识库、联网搜索和优先级并行调度。
+Aligo 是一个面向企业差旅场景的 Plan-and-Execute 多 Agent 应用。它将用户需求拆分为意图识别、信息收集、知识检索、偏好管理和行程规划等任务，再按优先级编排多个 Skill Agent。
 
-## ✨ 核心亮点
+项目重点不是单次生成一段旅行文案，而是建立一条可追踪、可测试、能跨会话保留状态的 Agent 工程链路。
 
-### 🎯 智能意图识别
-- 基于LLM语义理解的多意图识别（准确率90%+，对比关键词匹配提升25%）
-- 支持6大类意图：行程规划、记忆查询、偏好管理、知识问答、信息查询、事项收集
-- 自然语言理解，无需关键词匹配
+> 当前形态为可本地运行的 CLI 项目，用于 AI 应用架构、评估与可靠性实践；尚未接入真实机票、酒店预订 API，不应作为无人审核的生产预订系统。
 
-### 🧠 两层记忆架构
-- **短期记忆**：Redis 会话存储，支持滑动 TTL、最近10轮和多实例共享
-- **长期记忆**：SQLite 持久化偏好、聊天、行程和已结束会话摘要
-- 智能识别偏好追加/覆盖动作（"我还喜欢如家" vs "我搬家到上海了"）
-- 存储层解耦：`SessionStore` 管理会话状态，`LongTermMemoryRepository` 管理长期数据
+## 核心能力
 
-### 📚 RAG知识库
-- Milvus向量数据库 + BGE-m3 Embedding模型（本地部署）
-- 智能分块（Chunking）+ 滑动窗口切分 + 余弦相似度检索
-- 知识溯源：返回文档来源，准确率95%
-
-### ⚡ 优先级并行调度
-- Plan-and-Execute架构：IntentionAgent → OrchestrationAgent → 子Agent
-- 同优先级Agent并行执行（asyncio.gather）
-- 系统响应时间从30秒优化到15秒（-50%）
-
-### 🏗️ 插件化架构
-- **Skill Plugins**：所有子Agent重构为独立插件（`.claude/skills/`）
-- **LazyAgentRegistry**：动态发现机制，自动扫描注册
-- **懒加载**：未使用的Skill不加载，启动速度3秒
-- **Progressive Disclosure**：渐进式暴露，意图识别阶段仅加载元数据
-
-### 🛡️ 稳定性保障
-- **熔断器**：连续失败后自动熔断，保护服务
-- **指数退避重试**：自动重试失败请求（最大3次）
-- **健康检查**：实时监控LLM服务可用性
-
----
+| 能力 | 当前实现 |
+| --- | --- |
+| 多意图理解 | `IntentionAgent` 结合当前时间、历史上下文与 Skill 元数据，输出结构化调度计划 |
+| Plan-and-Execute 编排 | `OrchestrationAgent` 按优先级分批；同级并行，后续批次通过 `previous_results` 使用前置结果 |
+| 多轮行程补全 | 缺少出发地、目的地、日期或时长时进入追问，后续轮次合并行程草稿并恢复规划 |
+| 插件化 Skill | 6 个业务 Agent 位于 `.claude/skills/`，由 `LazyAgentRegistry` 按需动态导入并缓存实例 |
+| 两层记忆 | Redis 保存当前会话与待补全行程；SQLite 持久化偏好、完整聊天、历史行程和会话摘要 |
+| 企业知识检索 | BGE 向量检索 + BM25 关键词检索 + RRF 排名融合，Milvus Lite 保存向量与证据元数据 |
+| 行程质量门 | 模型输出经历 JSON 解析、结构归一化、确定性规则检查和最多一次统一修复 |
+| 可用性保障 | 结构化输出校验、有限重试、指数退避、熔断、健康检查与单 Agent 失败隔离 |
 
 ## 系统架构
 
-```
-用户输入
-   ↓
-┌──────────────────────────────────────────────────────────┐
-│  IntentionAgent (意图识别智能体)                          │
-│  - 语义理解用户意图（不使用关键词匹配）                    │
-│  - 识别关键实体                                           │
-│  - 生成调度计划                                           │
-│  - 确定智能体优先级                                       │
-│  - 动态加载 Skills Metadata (Progressive Disclosure)     │
-└──────────────────────────────────────────────────────────┘
-   ↓
-┌──────────────────────────────────────────────────────────┐
-│  OrchestrationAgent (协调器智能体)                       │
-│  - 按优先级调度子智能体                                   │
-│  - 同优先级并行执行                                       │
-│  - 管理智能体间消息传递                                   │
-│  - 集成两层记忆系统                                       │
-│  - 动态实例化 Skills (Plugin Architecture)               │
-└──────────────────────────────────────────────────────────┘
-   ↓
-┌─────────────────────── 优先级 1 (并行执行) ──────────────┐
-│                                                           │
-│  ┌─────────────────────┐  ┌──────────────────────────┐  │
-│  │ MemoryQuery Skill   │  │ EventCollection Skill    │  │
-│  │ 记忆查询智能体       │  │ 事项收集智能体            │  │
-│  │ - 查询旅行记录      │  │ - 出发地/目的地           │  │
-│  │ - 查询用户偏好      │  │ - 出行时间/返程地         │  │
-│  │ - 查询历史对话      │  │ - 出行目的                │  │
-│  └─────────────────────┘  └──────────────────────────┘  │
-│                                                           │
-│  ┌─────────────────────┐  ┌──────────────────────────┐  │
-│  │ Preference Skill    │  │ InformationQuery Skill   │  │
-│  │ 偏好管理智能体       │  │ 信息查询智能体            │  │
-│  │ - 酒店/航空偏好     │  │ - 网络搜索 (DuckDuckGo)  │  │
-│  │ - 座位/房型偏好     │  │ - 实时信息查询           │  │
-│  │ - 机型/餐饮偏好     │  │ - LLM摘要生成            │  │
-│  │ - 支持追加/覆盖     │  │                          │  │
-│  └─────────────────────┘  └──────────────────────────┘  │
-│                                                           │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │ RAGKnowledgeAgent Skill (知识库查询智能体)          │ │
-│  │ - 差旅政策文档查询 (Milvus Lite + RAG)             │ │
-│  │ - 企业内部知识检索                                  │ │
-│  │ - 自动文档切分 (Chunking) + 向量检索                │ │
-│  └─────────────────────────────────────────────────────┘ │
-│                                                           │
-└───────────────────────────────────────────────────────────┘
-   ↓
-┌─────────────────────── 优先级 2 (依赖优先级1) ───────────┐
-│                                                           │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │ ItineraryPlanningAgent Skill (行程规划智能体)       │ │
-│  │ - 整合所有前序智能体信息                            │ │
-│  │ - 生成完整行程计划                                  │ │
-│  │ - 包含：景点、交通、酒店、餐饮                      │ │
-│  └─────────────────────────────────────────────────────┘ │
-│                                                           │
-└───────────────────────────────────────────────────────────┘
-   ↓
-┌──────────────────────────────────────────────────────────┐
-│  结果聚合与记忆更新                                       │
-│  - 聚合所有智能体结果                                     │
-│  - 更新长期记忆（偏好、行程历史、聊天记录）                │
-│  - 生成人性化回复                                         │
-└──────────────────────────────────────────────────────────┘
-   ↓
-最终结果
-   ↓
-用户看到结果
+```mermaid
+flowchart TD
+    U["用户输入"] --> CLI["CLI 展示层"]
+    CLI --> EX["AgentTurnExecutor<br/>单轮业务入口"]
+    REDIS[("Redis<br/>近期对话 / 待补全行程")] --> EX
+    SQLITE[("SQLite<br/>偏好 / 聊天 / 行程 / 会话摘要")] --> EX
+    EX --> IA["IntentionAgent<br/>意图识别 + 调度计划"]
+    IA --> N["结构校验与确定性路由校正"]
+    N --> OA["OrchestrationAgent<br/>按优先级分批执行"]
+    OA --> LR["LazyAgentRegistry<br/>按需加载 Skill Agent"]
+    LR --> EC["event-collection"]
+    LR --> MQ["memory-query"]
+    LR --> PF["preference"]
+    LR --> IQ["query-info"]
+    LR --> RAG["ask-question"]
+    LR --> IP["plan-trip"]
+    MILVUS[("Milvus Lite<br/>BGE + BM25 + RRF")] --> RAG
+    EC --> IP
+    MQ --> IP
+    IQ --> IP
+    PF --> IP
+    RAG --> IP
+    IP --> QG["统一质量门<br/>归一化 / 检查 / 修复"]
+    QG --> OA
+    OA --> MEM["记忆副作用更新"]
+    MEM --> SQLITE
+    OA --> CLI
+    CLI --> U
 ```
 
-### 连接与可用性
+### 一次请求的执行顺序
 
-为保证 LLM 服务不稳定时的可用性，在调用链外增加了以下机制（不改变原有业务逻辑）：
+1. `AgentTurnExecutor` 从 SQLite 读取已持久化的偏好、最近 3 个历史会话摘要与相关行程，再从 Redis 读取当前会话近期对话。
+2. `IntentionAgent` 将上下文、当前时间和 Skill 能力简介组合进 Prompt，生成 `reasoning`、`intents`、`key_entities`、`rewritten_query` 和 `agent_schedule`。
+3. 业务入口校验 JSON 结构，并结合 Redis 中的待补全状态做确定性路由校正。
+4. `OrchestrationAgent` 按优先级分批执行：同级 Agent 通过 `asyncio.gather` 并行，不同优先级串行。
+5. 行程规划结果通过统一质量门；协调器在调度结束后统一写入偏好和行程副作用，`AgentTurnExecutor` 分别记录本轮用户输入和助手结果。
+6. CLI 只负责展示结构化结果，不承担核心业务逻辑。
 
-| 机制 | 说明 |
-|------|------|
-| **熔断器** | 连续失败若干次后暂停调用 LLM，直接提示「服务暂时不可用」；一段时间后自动半开试探恢复。 |
-| **重试与退避** | 对意图识别、编排两次 LLM 调用做有限次重试，仅对超时、429、5xx 等可重试错误生效，采用指数退避。 |
-| **健康检查** | 会话内输入 `health` 可查看熔断状态并探测 LLM 是否可达；命令行执行 `python cli.py health` 可单独做一次探测（退出码 0/1，便于监控）。 |
+## Skill 分工
 
-配置见 `config.py` 中的 `RESILIENCE_CONFIG`（重试次数、熔断阈值、恢复时间等）。
+| Skill 目录 | 调度名称 | 职责 |
+| --- | --- | --- |
+| `event-collection` | `event_collection` | 提取出发地、目的地、日期、时长、行程目的与预订状态 |
+| `plan-trip` | `itinerary_planning` | 基于已收集的真实信息生成每日行程，并输出可校验的时间与预订引用 |
+| `memory-query` | `memory_query` | 查询用户已持久化的偏好、历史行程和过往对话 |
+| `preference` | `preference` | 识别偏好的类型、值以及 `append` / `replace` 更新模式 |
+| `query-info` | `information_query` | 通过 wttr.in 查询天气，或通过 DDGS 搜索动态信息 |
+| `ask-question` | `rag_knowledge` | 检索企业差旅规定、报销政策、预订指南和应急流程 |
 
----
+`SkillLoader` 在意图识别阶段只读取 `SKILL.md` 的名称和简介；任务确定后，`LazyAgentRegistry` 才动态导入对应的 `script/agent.py` 并缓存实例，需要流程说明的 Skill Agent 再读取完整正文。这分别对应 Prompt 信息的渐进式披露和 Python 实例的懒加载。
 
-## 📊 关键指标
+## 记忆系统
 
-| 指标 | 优化前 | 优化后 | 提升幅度 |
-|------|--------|--------|----------|
-| 意图识别准确率 | 65% | 90%+ | +25% |
-| 知识库问答准确率 | - | 95% | 新增功能 |
-| 用户偏好记忆准确率 | - | 95% | 新增功能 |
-| 系统响应时间 | 30秒 | 15秒 | -50% |
-| 用户偏好缓存命中率 | - | 85% | 新增功能 |
-| 系统启动速度 | 未优化 | 3秒 | 懒加载优化 |
-
-**优化路径**：
-1. **V1.0**: 关键词匹配意图识别（准确率65%） + 串行调度（响应时间30秒）
-2. **V2.0**: 两层记忆系统 + RAG知识库 + 联网搜索
-3. **V3.0**: LLM语义理解意图识别（准确率90%+） + 优先级并行调度（响应时间15秒）
-4. **V4.0**: Skill Plugins插件化架构 + LazyAgentRegistry + Redis缓存层
-
----
-
-## 核心功能
-
-### 1. 意图识别（基于LLM语义理解）
-
-系统支持**6大类意图**自动识别（准确率90%+）：
-
-- ✅ **itinerary_planning**: 规划未来行程
-  - 示例："我想3月11日从北京去杭州出差一周"
-- ✅ **memory_query**: 查询历史记忆
-  - 示例："我去过哪里？"、"我之前说过什么偏好？"
-- ✅ **preference**: 管理用户偏好（支持追加/覆盖）
-  - 示例："我喜欢住汉庭酒店"、"我还喜欢如家"、"我搬家到上海了"
-- ✅ **rag_knowledge**: 查询企业差旅知识库
-  - 示例："差旅标准是什么？"、"报销政策是什么？"
-- ✅ **information_query**: 联网查询实时信息
-  - 示例："杭州明天天气怎么样？"、"北京明天限行吗？"
-- ✅ **event_collection**: 收集行程要素
-  - 自动提取：出发地、目的地、出发时间、返程时间、出行目的
-
-**意图识别示例**：
-```
-用户: "我过去都去哪旅游过？"
-→ IntentionAgent 识别为 memory_query
-→ 调度 MemoryQueryAgent
-→ 从 trip_history 查询并回答
-
-用户: "我还喜欢7天酒店"
-→ IntentionAgent 识别为 preference
-→ 调度 PreferenceAgent
-→ LLM 识别「还」字，判断为 append 模式
-→ 追加到 hotel_brands 列表
+```mermaid
+flowchart LR
+    TURN["当前对话轮次"] --> REDIS[("Redis<br/>近期消息 + 行程草稿<br/>滑动 TTL")]
+    TURN --> CHAT[("SQLite chat_messages<br/>完整原始聊天")]
+    EXIT["exit / end_session"] --> CHAT
+    CHAT --> SUM["LLM 生成一次会话摘要"]
+    SUM --> SQLITE[("SQLite session_summaries")]
+    EXIT --> CLEAR["清理 Redis 会话状态"]
+    SQLITE --> NEXT["后续会话直接读取<br/>不再调用 LLM 重复总结"]
 ```
 
-### 2. 两层记忆系统
+- **Redis 短期记忆**：使用 `user_id + session_id` 隔离 key，保存最近对话和待补全行程；每次活动刷新 TTL，多个应用进程可共享会话状态。
+- **SQLite 长期记忆**：使用 Repository 抽象隔离业务层和 SQL，存储用户偏好、完整聊天、幂等行程历史和会话摘要。
+- **摘要生命周期**：用户输入 `exit` 时读取 SQLite 原始聊天，仅生成一次摘要。`message_count` 未变时复用已有摘要；摘要失败不会删除事实数据，也不会阻止用户退出。
 
-**短期记忆（会话级）**
-- 基于 **RedisSessionStore** 的滑动窗口机制
-- 保存最近10轮对话和当前待补全行程
-- Key 同时包含 `user_id` 和 `session_id`，保证用户与会话隔离
-- 会话活动会刷新 TTL，过期后 Redis 自动回收临时状态
-- 多个应用进程可以共享同一份会话数据
-- 用于上下文理解和快速访问
+## RAG 检索链路
 
-**长期记忆（持久化）**
-- 💾 **SQLite持久化存储**：用户偏好、历史行程、完整聊天历史
-- 🎯 **用户偏好管理**：支持动态添加任意偏好类型，智能识别追加/覆盖动作
-- 📅 **历史行程记录**：出发地、目的地、时间、目的，支持跨会话查询
-- 📊 **统计信息**：常去目的地、总行程数
-- 🤖 **会话摘要持久化**：会话结束时只调用一次 LLM，后续会话直接读取 SQLite 摘要
-- 🗄️ **单一数据源**：长期记忆统一读写 SQLite，避免多存储数据不一致
-
-**测试记忆系统**：
-```bash
-python tests/test_memory_system.py
+```text
+用户政策问题
+→ 动态信息能力边界检查
+→ BGE + Milvus 语义候选
+→ BM25 关键词候选
+→ RRF 融合排名
+→ 分层语义阈值
+→ 近重复证据过滤
+→ Top-4 知识片段
+→ LLM 基于证据组织回答
 ```
 
-测试覆盖：
-- ✅ 短期记忆：添加、查询、TTL、用户/会话隔离、多实例共享
-- ✅ 长期记忆-偏好：动态添加、跨会话访问
-- ✅ 长期记忆-行程：保存、查询、高频目的地统计
-- ✅ 长期记忆-聊天历史：持久化对话记录
-- ✅ LLM总结：会话结束时生成一次并持久化，失败时保留原始聊天
-- ✅ 跨会话持久化：新会话访问旧数据
+当前 RAG 开发集使用 `source + chunk_index` 标注 Gold Evidence，评价的是“是否找到正确证据”，而不是用关键词判断最终文案是否好看。
 
-### 3. RAG 知识库
+## 评估与当前结果
 
-基于 **Milvus** 和 **BGE-m3 Embedding模型**的企业差旅知识检索系统。
+项目将评估分为三个独立问题，不把不同口径强行合成一个总分。
 
-**技术方案**：
-- **向量数据库**: Milvus（本地存储）
-- **Embedding模型**: BGE-small-zh-v1.5（中文向量化，本地部署 `data/models/bge-small-zh-v1.5`）
-- **文档处理**: 智能分块（Chunking）+ 滑动窗口切分
-- **检索算法**: 余弦相似度检索（Top-K=4）+ 相似度阈值过滤 + 近重复片段过滤
-- **可追溯性**: 返回文档来源，支持知识溯源
-- **准确率**: 95%（知识库问答准确率）
+| 评估 | 固定数据集 | 当前归档结果 |
+| --- | ---: | --- |
+| System Evaluation | 15 个场景 × 3 次，45 次运行 | 总通过率 93.3%（42/45），Critical Pass Rate 90% |
+| Itinerary Quality | 10 个场景 × 3 次，30 份行程 | 硬规则 93.3%（28/30）；28 份有效 Judge 平均分 87.93，合格率 85.7% |
+| RAG Retrieval | 15 题（12 正例 + 3 负例） | Evidence Recall@4 91.67%，MRR@4 70.14%，负例拒绝率 100% |
 
-**初始化知识库**：
-```bash
-python .claude/skills/ask-question/script/init_knowledge_base.py
-```
+评估边界：
 
-**知识库内容**（8类文档）：
-- 差旅标准和规定
-- 报销政策
-- 预订指南
-- 常见问题FAQ
-- 紧急情况处理
-- 平台使用指南
-- 城市差旅指南
-- 环保倡议
+- System Evaluation 检查路由、状态、调度和记忆副作用，不评价行程文案。
+- Itinerary Quality 使用“确定性硬规则 + 证据约束 LLM Judge”；LLM Judge 不等于人工金标准。
+- RAG 结果来自开发集，只评价证据检索，不代表最终回答准确率。
 
+详细口径与限制见：
 
-### 4. 信息查询（联网搜索）
-
-基于 **DuckDuckGo (DDGS)** 的免费网络搜索功能：
-- 🌐 实时网络搜索（天气、景点、实时新闻）
-- 📝 LLM自动摘要（提取关键信息）
-- 🔗 来源追踪（返回搜索来源）
-- 🚀 异步查询（提升响应速度）
-
-### 5. 优先级并行调度
-
-基于 **asyncio.gather** 的智能并行调度机制：
-- 📋 **多意图识别**：支持6大类意图（规划行程、查询记忆、管理偏好、知识问答、信息查询、实时检索）
-- ⚡ **优先级+并行混合模式**：同优先级Agent并行执行，不同优先级串行依赖
-- 🎯 **动态调度**：根据意图识别结果动态分配优先级
-- 📈 **性能提升**：系统响应时间从30秒优化到15秒（-50%）
-
----
+- [最终回归报告](evaluation/reports/final-regression-v1.0.0.md)
+- [System Evaluation v0.4.0](evaluation/system/reports/v0.4.0-optimized-system-evaluation.md)
+- [Itinerary Quality v0.6.0](evaluation/itinerary_quality/reports/v0.6.0-unified-quality-gate-three-run-evaluation.md)
+- [RAG Retrieval v0.2.0](evaluation/rag/reports/v0.2.0-hybrid-retrieval-optimization.md)
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 环境要求
+
+- Python 3.11（项目的主要开发与回归环境）
+- Docker Desktop（用于本地 Redis）
+- DeepSeek API Key
+- 首次初始化 RAG 时需要本地 BGE 模型；配置路径不存在时会尝试从 `BAAI/bge-small-zh-v1.5` 下载
+
+### 2. 安装依赖
 
 ```bash
-# 使用 requirements.txt 安装所有依赖
-pip install -r requirements.txt
-
-# 或者手动安装核心依赖
-pip install "setuptools>=69.0.0,<82"  # milvus_lite 依赖
-pip install agentscope==1.0.16        # 多智能体框架
-pip install "pymilvus[milvus_lite]==2.6.9"  # 向量数据库
-pip install sentence-transformers==5.2.3    # Embedding模型
-pip install rich==13.9.4                    # CLI界面
-pip install ddgs==9.10.0                    # 网络搜索
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
 ```
 
-### 2. 启动 Redis
+`requirements-dev.txt` 包含运行依赖和测试使用的 `fakeredis`。只运行项目时可安装 `requirements.txt`。
 
-短期对话和待补全行程保存在 Redis。已安装 Docker Desktop 时，
-先启动 Docker Desktop，再在项目目录执行：
+### 3. 启动 Redis
 
 ```bash
 docker compose -p travel-agent up -d redis
 docker compose -p travel-agent ps
 ```
 
-默认连接 `redis://localhost:6379/0`，可复制 `.env.example` 中的
-变量按需调整。停止本地 Redis：
+默认连接为 `redis://localhost:6379/0`。可通过环境变量修改：
+
+```bash
+export REDIS_URL=redis://localhost:6379/0
+export REDIS_SESSION_TTL_SECONDS=3600
+```
+
+停止本地 Redis：
 
 ```bash
 docker compose -p travel-agent down
 ```
 
-### 3. 配置模型
+### 4. 配置 DeepSeek
 
-编辑 `config.py`，填入你的豆包大模型API密钥：
-
-```python
-LLM_CONFIG = {
-    "api_key": "your-api-key-here",  # 替换为你的API密钥
-    "model_name": "doubao-seed-1-6-flash-250828",
-    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-    "temperature": 0.7,
-    "max_tokens": 8192,
-}
+```bash
+export DEEPSEEK_API_KEY="your-api-key"
 ```
 
-**配置说明**：
-- `api_key`: 豆包大模型API密钥（必填）
-- `model_name`: 模型名称（推荐使用 flash 系列）
-- `temperature`: 控制生成的随机性（0-1，0.7为推荐值）
-- `max_tokens`: 最大输出token数（8192）
+也可以不设置环境变量；CLI 启动时会隐藏输入 API Key，密钥只保留在当前进程，不会写入仓库。
 
-### 4. 初始化知识库
+### 5. 初始化 RAG 知识库
 
 ```bash
 python .claude/skills/ask-question/script/init_knowledge_base.py
 ```
 
-### 5. 启动系统
+该脚本将 8 份差旅文档切分后写入 `.claude/skills/ask-question/data/rag_knowledge/milvus_lite.db`。该数据库为本地可重建产物，不提交到 Git。
+
+### 6. 运行 CLI
 
 ```bash
 python cli.py
 ```
 
----
+示例对话：
 
-## 子智能体详解 (Skills)
+```text
+> 帮我规划一次去北京的出差
+系统：请补充出发地、出发日期和行程天数
 
-所有子智能体已重构为 **Skill Plugins**，位于 `.claude/skills/` 目录下，支持动态发现与加载。
-
-### 1. MemoryQueryAgent (记忆查询智能体) 
-
-- **职责**: 查询用户的历史记忆
-- **查询内容**:
-  - 旅行历史（trip_history）
-  - 用户偏好（preferences）
-  - 历史对话摘要（chat_history）
-- **特点**:
-  - 直接查询本地记忆，无需联网
-  - 使用 LLM 生成自然语言回答
-  - 支持复杂的记忆推理
-- **示例**: "我过去去过哪些地方？"、"我上次去北京是什么时候？"
-
-### 2. EventCollectionAgent (事项收集智能体)
-
-- **职责**: 收集行程规划的核心信息
-- **收集内容**: 出发地、目的地、出发时间、返程时间、出行目的
-- **特点**: 主动推断缺失信息
-
-### 3. PreferenceAgent (偏好管理智能体)
-
-- **职责**: 识别和管理用户所有偏好
-- **管理偏好**:
-  - 酒店品牌、航空公司、座位偏好、房型偏好
-  - 机型偏好、餐饮偏好、交通偏好、预算等级
-  - 支持任意自定义偏好类型
-- **智能模式**:
-  - **追加模式**：识别「还」、「也」等关键词，追加到现有偏好
-  - **覆盖模式**：识别「搬家到」、「改成」等关键词，替换旧偏好
-  - **示例**: "我还喜欢汉庭" → 追加；"我搬家到上海" → 覆盖
-- **特点**:
-  - 感知当前已有偏好，避免重复
-  - 所有偏好作为长期偏好持久化保存
-  - 从对话中提取隐含偏好
-
-### 4. InformationQueryAgent (信息查询智能体)
-
-- **职责**: 实时信息检索（联网）
-- **查询能力**: DuckDuckGo 搜索 + LLM 摘要
-- **查询场景**: 天气、景点、实时新闻、通用问答
-
-### 5. ItineraryPlanningAgent (行程规划智能体)
-
-- **职责**: 生成完整行程计划
-- **规划内容**: 每日时间表、住宿建议、餐饮建议、交通路线、注意事项
-- **特点**: 即使信息不完整也给出合理建议
-
-### 6. RAGKnowledgeAgent (知识库查询智能体)
-
-- **职责**: 查询企业商旅知识库
-- **技术栈**: Milvus Lite + BGE 中文向量模型
-- **特点**: 提供文档溯源，返回参考来源
-
----
-
-## CLI 使用指南
-
-### 启动
-
-```bash
-python cli.py
+> 下周一从苏州出发，去三天，先看参考方案
+系统：合并待补全信息并继续规划
 ```
 
-**启动速度**: 约 3 秒（采用LazyAgentRegistry懒加载技术）
+CLI 命令：
 
-### 内置命令
-
-| 命令 | 说明 |
-|------|------|
-| `help` | 显示帮助信息 |
-| `status` | 查看当前状态和记忆 |
-| `health` | 检查 LLM 服务是否可用并显示熔断器状态 |
-| `clear` | 清空当前任务（保留长期记忆） |
+| 命令 | 作用 |
+| --- | --- |
+| `help` | 显示帮助 |
+| `status` | 查看当前会话与记忆状态 |
+| `health` | 探测 LLM 可用性与熔断器状态 |
+| `clear` | 清理 Redis 当前任务，保留 SQLite 长期记忆 |
 | `history` | 查看历史行程 |
-| `preferences` | 查看用户偏好 |
-| `exit` | 退出程序 |
+| `preferences` | 查看已保存偏好 |
+| `exit` | 生成并持久化当前会话摘要，然后退出 |
 
-单独做健康检查（不进入交互）：`python cli.py health`，返回 `OK` / `FAIL: ...`，退出码 0/1。
+## 测试与评估
 
----
-
-## 测试
-
-### 集成测试 (QA)
-完整跑通所有意图和子智能体的端到端测试：
-```bash
-python tests/test_cli_qa.py
-```
-
-### 单元测试
-针对各个核心模块的测试：
+### 完整自动化回归
 
 ```bash
-python tests/test_memory_system.py  # 记忆系统
-python tests/test_intention_agent.py # 意图识别
-python tests/test_orchestration.py  # 协调系统
+python -m unittest discover -s tests -p "test_*.py"
 ```
 
----
+使用真实 Redis 服务额外验证多客户端共享：
+
+```bash
+TEST_REDIS_URL=redis://localhost:6379/0 \
+python -m unittest tests.test_redis_integration -v
+```
+
+### System Evaluation
+
+```bash
+python evaluation/system/run_system_eval.py --dry-run
+python evaluation/system/run_system_eval.py --runs 3
+```
+
+### Itinerary Quality Evaluation
+
+```bash
+python -m evaluation.itinerary_quality.hard_rule_evaluator
+
+python evaluation/itinerary_quality/generate_itinerary_outputs.py \
+  --runs 3 \
+  --temperature 0
+
+python evaluation/itinerary_quality/judge_itinerary_outputs.py \
+  --input-report /path/to/itinerary-outputs.json \
+  --temperature 0
+```
+
+### RAG Retrieval Evaluation
+
+```bash
+python evaluation/rag/run_rag_retrieval_eval.py --dry-run
+python evaluation/rag/run_rag_retrieval_eval.py
+```
+
+评估的数据集、生成器、评估器、原始结果与人工归档报告的职责划分见 [evaluation/README.md](evaluation/README.md)。
 
 ## 项目结构
 
-```
-shanglv/
-├── agents/                          # 核心编排层
-│   ├── intention_agent.py           # 意图识别（语义理解）
-│   ├── orchestration_agent.py       # 协调器（并行调度）
-│   └── lazy_agent_registry.py       # 智能体插件注册器（懒加载）
-├── .claude/skills/                  # Skill Plugins (子智能体)
-│   ├── ask-question/                # 知识库问答 Skill
-│   │   ├── script/                  # 代码 (agent.py, init_script)
-│   │   ├── data/                    # 数据 (documents, milvus db)
-│   │   └── SKILL.md                 # 技能定义
-│   ├── event-collection/            # 事项收集 Skill
-│   ├── plan-trip/                   # 行程规划 Skill
-│   ├── preference/                  # 偏好管理 Skill
-│   ├── query-info/                  # 信息查询 Skill
-│   └── memory-query/                # 记忆查询 Skill
-├── context/                         # 记忆系统
-│   ├── memory_manager.py            # 记忆管理器
-│   ├── short_term_memory.py         # 短期记忆
-│   ├── session_store.py              # 短期会话存储接口
-│   ├── redis_session_store.py        # Redis 短期会话存储
-│   ├── session_store_factory.py      # Redis 存储创建入口
-│   ├── memory_repository.py          # 长期记忆仓库接口
-│   └── sqlite_memory_repository.py   # 默认 SQLite 长期记忆实现
-├── data/
-│   ├── memory/                      # SQLite 长期记忆数据库
-│   └── models/                      # 本地模型文件
-│       └── bge-small-zh-v1.5/       # BGE中文Embedding模型
-├── tests/                           # 测试脚本
-│   ├── test_cli_qa.py               # 端到端集成测试
-│   ├── test_memory_system.py        # 记忆系统测试
-│   ├── test_intention_agent.py      # 意图识别测试
-│   └── test_orchestration.py        # 协调系统测试
-├── utils/                           # 工具与连接可用性
-│   ├── circuit_breaker.py           # 熔断器
-│   ├── llm_resilience.py            # 重试退避、健康检查
-│   ├── json_parser.py               # JSON 解析
-│   └── skill_loader.py              # Skill 加载器
-├── cli.py                           # CLI 主程序
-├── config.py                        # 配置文件
-├── config_agentscope.py             # AgentScope 初始化与模型配置
-└── README.md                        # 本文件
+```text
+.
+├── agents/                         # 意图识别、编排和 Skill 懒加载
+├── .claude/skills/                 # 6 个业务 Skill 的说明、脚本和 RAG 文档
+├── context/                        # Redis 会话存储与 SQLite 长期记忆
+├── services/turn_executor.py       # CLI 和评估器共用的单轮业务执行器
+├── utils/                          # JSON、路由、预订上下文、质量门、重试和熔断
+├── evaluation/
+│   ├── system/                     # 路由、状态、调度和记忆副作用
+│   ├── itinerary_quality/          # 行程硬规则与 LLM Judge
+│   └── rag/                        # 证据级检索评估
+├── tests/                           # 单元、组件与可选真 Redis 集成测试
+├── cli.py                          # Rich CLI 入口
+├── config.py                       # LLM、RAG、Redis 和可用性参数
+├── compose.yaml                    # 本地 Redis
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
----
+## 设计取舍与已知限制
 
-## 技术栈总览
-
-### 核心框架
-- 📦 **AgentScope 1.0.16** - 多智能体框架
-- 🤖 **豆包大模型 (doubao-seed-1-6-flash-250828)** - 大语言模型
-
-### 数据存储
-- 🗄️ **SQLite** - 长期记忆持久化（用户偏好、历史行程、聊天记录）
-- 🧩 **SessionStore / Repository** - 短期与长期存储的可替换接口
-- 🔍 **Milvus** - 向量数据库（本地存储，RAG知识库）
-
-### 向量化与检索
-- 🧠 **BGE-small-zh-v1.5** - 中文Embedding模型（本地部署）
-- 📚 **Sentence-Transformers 5.2.3** - 向量化工具库
-- 🎯 **余弦相似度检索** - Top-K检索算法
-
-### 联网与搜索
-- 🌐 **DuckDuckGo (DDGS 9.10.0)** - 免费网络搜索引擎
-- 📝 **LLM自动摘要** - 搜索结果智能提取
-
-### 架构设计
-- 🏗️ **Skill Plugins插件化架构** - 独立开发、测试、部署
-- 🔄 **LazyAgentRegistry动态发现** - 自动扫描注册Agent插件
-- ⚡ **懒加载机制** - 未使用的Skill不加载（启动速度3秒）
-- 🔀 **Progressive Disclosure渐进式暴露** - 意图识别阶段仅加载元数据，执行阶段按需加载
-- 🎯 **优先级+并行混合调度** - asyncio.gather并发执行
-
-### 稳定性保障
-- 🔁 **指数退避重试** - 自动重试失败请求（最大3次）
-- 🩺 **熔断器机制** - 连续失败后暂停调用
-- 💊 **健康检查** - 实时监控LLM服务可用性
-
-### 用户界面
-- 🖥️ **Rich 13.9.4** - 精美的CLI终端界面
-
----
-
-## ⚠️ 注意事项
-
-### 模型配置
-- 必须配置豆包大模型API密钥（在 `config.py` 中）
-- 推荐使用 flash 系列模型（响应速度快）
-- BGE Embedding模型需下载到 `data/models/bge-small-zh-v1.5/`
-
-### 数据存储
-- 当前版本使用 **SQLite** 存储长期记忆（`data/memory/memory.sqlite3`）
-- 当前短期会话使用 **Redis**；程序启动时会验证连接，不会静默降级到进程内存
-- PostgreSQL 是面向多实例生产部署的长期仓库演进方向，当前未实现
-
-### 知识库初始化
-- 首次运行前必须初始化RAG知识库
-- 知识库文档位于 `.claude/skills/ask-question/data/documents/`
-- Milvus数据库文件生成在 `.claude/skills/ask-question/data/milvus_travel_kb.db`
-
-### 性能优化
-- 懒加载机制：系统启动时仅扫描Skill元数据，首次调用时才加载
-- 并行调度：同优先级Agent并发执行，提升响应速度
-- 缓存策略：热数据缓存，减少重复计算和LLM调用
-
----
-
-## 🚀 未来规划
-
-- [x] 实现 RedisSessionStore（TTL 与多实例会话共享）
-- [ ] 按生产规模评估是否迁移到 PostgreSQL
-- [ ] 支持更多LLM模型（OpenAI、Claude等）
-- [ ] Web界面（FastAPI + React）
-- [ ] 更多Skill插件（酒店预订、机票查询等）
-- [ ] 监控和日志系统
-
----
-
-## 许可证
-
-MIT License
+- 多 Agent 提高了模块边界、独立测试和错误定位能力，但也增加了调度、结构化输出与状态一致性成本。
+- Redis 是当前正式运行依赖，连接失败不会静默降级为进程内存，避免多实例状态不一致。
+- SQLite 适合单机项目与实习作品集；多节点、高并发部署时可通过 `LongTermMemoryRepository` 演进到 PostgreSQL。
+- 项目没有真实票务和酒店库存。用户未提供已确认预订时，规划 Agent 只能给出参考方案，不应编造精确车次、票价、酒店价格或天气。
+- RAG 当前尚未建立独立测试集和人工回答金标准；当前结果必须表述为开发集检索指标。
+- 当前只提供 CLI；FastAPI / Web 入口可在不复制业务逻辑的前提下封装 `AgentTurnExecutor`。
